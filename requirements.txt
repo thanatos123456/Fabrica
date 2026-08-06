@@ -1,0 +1,31 @@
+# Fabrica 基础依赖
+# aurora 公共库为本地路径依赖（aurora/python/），通过 main.py 的 sys.path 注入
+
+# Web 框架
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# 配置与数据校验
+pydantic>=2.0.0
+PyYAML>=6.0
+
+# 日志
+loguru>=0.7.0
+
+# 视频抽帧（T4.2，自带 ffmpeg 库）
+av>=11.0.0
+
+# 感知哈希（T4.4，imagehash.phash 依赖 scipy 做 DCT）
+imagehash>=4.0
+scipy>=1.10
+
+# pHash 二进制索引（T4.5）
+faiss-cpu>=1.8
+
+# L3 CLIP 深度特征（T5.1，可选，需 torch；未安装时 L3 自动降级）
+open_clip_torch>=2.0
+
+# 测试
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+httpx>=0.24.0

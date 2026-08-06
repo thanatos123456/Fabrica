@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fabrica"
+version = "0.1.0"
+description = "Fabrica - 工具集平台"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["fabrica", "fabrica.server", "fabrica.tools", "fabrica.utils"]
