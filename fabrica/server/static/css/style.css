@@ -1,0 +1,281 @@
+/* ==========================================================================
+   Fabrica SPA 全局样式
+   通过 CSS 自定义属性实现主题切换（:root 浅色 / [data-theme="dark"] 深色）
+   ========================================================================== */
+
+/* ---- 主题变量：浅色（默认） ---- */
+:root {
+    --color-bg: #f5f6fa;
+    --color-surface: #ffffff;
+    --color-text: #1f2329;
+    --color-muted: #6b7280;
+    --color-primary: #2563eb;
+    --color-primary-hover: #1d4ed8;
+    --color-border: #e5e7eb;
+    --color-danger: #dc2626;
+    --color-success: #16a34a;
+    --color-warning: #d97706;
+    --progress-track: #e5e7eb;
+    --progress-fill: #2563eb;
+    --log-bg: #0f172a;
+    --log-text: #e2e8f0;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --radius: 8px;
+}
+
+/* ---- 主题变量：深色 ---- */
+[data-theme="dark"] {
+    --color-bg: #111827;
+    --color-surface: #1f2937;
+    --color-text: #f3f4f6;
+    --color-muted: #9ca3af;
+    --color-primary: #3b82f6;
+    --color-primary-hover: #60a5fa;
+    --color-border: #374151;
+    --color-danger: #ef4444;
+    --color-success: #22c55e;
+    --color-warning: #f59e0b;
+    --progress-track: #374151;
+    --progress-fill: #3b82f6;
+    --log-bg: #0b1220;
+    --log-text: #cbd5e1;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.5;
+}
+
+a { color: var(--color-primary); text-decoration: none; }
+a:hover { color: var(--color-primary-hover); }
+
+/* ---- 头部 ---- */
+.app-header {
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    box-shadow: var(--shadow);
+}
+.header-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 20px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+}
+.brand { font-weight: 700; font-size: 18px; color: var(--color-text); }
+.brand:hover { color: var(--color-primary); }
+.header-nav { display: flex; gap: 16px; flex: 1; }
+.header-nav a { color: var(--color-muted); }
+.header-nav a:hover { color: var(--color-primary); }
+.theme-toggle {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px 10px;
+}
+
+/* ---- 主体 ---- */
+.app-main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px 20px 60px;
+}
+.app-footer {
+    text-align: center;
+    color: var(--color-muted);
+    font-size: 13px;
+    padding: 20px;
+}
+.page-title { font-size: 22px; margin: 0 0 16px; }
+.page-desc { color: var(--color-muted); margin: 0 0 20px; }
+
+/* ---- 工具卡片 ---- */
+.tool-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+}
+.tool-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    cursor: pointer;
+    display: block;
+    color: var(--color-text);
+}
+.tool-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    color: var(--color-text);
+}
+.tool-card .tool-icon { font-size: 28px; }
+.tool-card .tool-title { font-size: 17px; font-weight: 600; margin: 8px 0 4px; }
+.tool-card .tool-desc {
+    color: var(--color-muted);
+    font-size: 13px;
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.tool-card .tool-meta { color: var(--color-muted); font-size: 12px; margin-top: 10px; }
+
+/* ---- 表单 ---- */
+.form-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+    max-width: 640px;
+}
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-weight: 600; margin-bottom: 6px; }
+.form-label .req { color: var(--color-danger); }
+.form-desc { color: var(--color-muted); font-size: 12px; margin-top: 4px; }
+.form-control {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 14px;
+}
+.form-control:focus { outline: none; border-color: var(--color-primary); }
+input[type="checkbox"] { width: auto; transform: scale(1.2); cursor: pointer; }
+
+/* ---- 按钮 ---- */
+.btn {
+    display: inline-block;
+    padding: 8px 16px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    background: var(--color-primary);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+}
+.btn:hover { background: var(--color-primary-hover); }
+.btn-secondary {
+    background: var(--color-surface);
+    color: var(--color-text);
+    border-color: var(--color-border);
+}
+.btn-secondary:hover { background: var(--color-bg); }
+.btn-danger { background: var(--color-danger); }
+.btn-danger:hover { background: #b91c1c; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* ---- 进度条 ---- */
+.progress-wrap { margin: 16px 0; }
+.progress-bar {
+    height: 14px;
+    border-radius: 7px;
+    background: var(--progress-track);
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--progress-fill);
+    transition: width 0.2s ease;
+}
+.progress-text { font-size: 13px; color: var(--color-muted); margin-top: 6px; }
+
+/* ---- 日志流 ---- */
+.log-stream {
+    background: var(--log-bg);
+    color: var(--log-text);
+    border-radius: var(--radius);
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    max-height: 320px;
+    overflow-y: auto;
+    margin-top: 16px;
+}
+.log-line { white-space: pre-wrap; word-break: break-all; margin: 2px 0; }
+.log-line .ts { color: var(--color-muted); margin-right: 8px; }
+
+/* ---- 任务表格 ---- */
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.table th, .table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 14px;
+}
+.table th { background: var(--color-bg); color: var(--color-muted); font-weight: 600; }
+.table tr:hover td { background: var(--color-bg); }
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+}
+.badge.success { color: var(--color-success); border-color: var(--color-success); }
+.badge.danger { color: var(--color-danger); border-color: var(--color-danger); }
+.badge.warning { color: var(--color-warning); border-color: var(--color-warning); }
+
+/* ---- 状态/提示 ---- */
+.empty-tip { color: var(--color-muted); padding: 40px; text-align: center; }
+.error-tip {
+    color: var(--color-danger);
+    background: var(--color-surface);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin: 12px 0;
+}
+.result-box {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-top: 16px;
+}
+.muted { color: var(--color-muted); }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+/* ---- 响应式 ---- */
+@media (max-width: 640px) {
+    .tool-grid { grid-template-columns: 1fr; }
+    .header-inner { padding: 0 12px; gap: 12px; }
+    .app-main { padding: 16px 12px 40px; }
+}

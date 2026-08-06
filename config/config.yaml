@@ -1,0 +1,28 @@
+# Fabrica 平台配置文件
+# 包含 4 个配置域：server / logging / storage / tools
+
+fabrica:
+  # 服务配置
+  server:
+    host: "127.0.0.1"           # 监听地址
+    port: 8520                  # 监听端口
+    cors_origins: ["*"]         # CORS 允许的源
+    static_dir: "server/static" # 前端静态资源目录
+
+  # 日志配置
+  logging:
+    level: "INFO"               # 日志级别：DEBUG / INFO / WARNING / ERROR
+    dir: "logs"                 # 日志文件目录
+    rotation: "1 day"           # 日志轮转周期
+    retention: "30 days"        # 日志保留时间
+
+  # 存储配置
+  storage:
+    db_path: "data/fabrica.db"  # SQLite 数据库路径
+    temp_dir: "data/tmp"        # 临时文件目录
+    data_dir: "data/tools"      # 工具持久化数据目录
+
+  # 工具配置
+  tools:
+    dirs: ["fabrica/tools"]     # 工具扫描目录列表
+    auto_discover: true         # 是否自动扫描发现工具
