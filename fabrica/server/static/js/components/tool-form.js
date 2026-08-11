@@ -38,7 +38,6 @@ function renderControl(def) {
             <input type="${inputType}" ${step} class="form-control" data-key="${key}" data-type="${type}"
                 id="f-${key}" placeholder="${escapeHtml(ph)}" value="${dflt !== null && dflt !== undefined ? escapeHtml(String(dflt)) : ""}">
             ${browse}
-            ${isFileLike ? `<input type="file" data-key="${key}" style="display:none">` : ""}
         </div>`;
 }
 
@@ -74,16 +73,41 @@ export async function renderToolForm(container, name) {
             </form>
         </div>`;
 
-    // 文件/目录选择器回填
+    // 文件/目录选择器：pywebview 原生对话框 + 浏览器回退
     container.querySelectorAll(".browse-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-            const input = document.querySelector(`input[type="file"][data-key="${btn.dataset.key}"]`);
-            if (input) {
-                input.onchange = () => {
-                    const text = document.querySelector(`input[data-key="${btn.dataset.key}"][type="text"]`);
-                    if (text && input.value) text.value = input.value.replace(/^.*[\\/]/, "");
-                };
-                input.click();
+        btn.addEventListener("click", async () => {
+            const key = btn.dataset.key;
+            const isDir = btn.dataset.dir === "true";
+            const textInput = document.querySelector(
+                `input[data-key="${key}"][type="text"]`
+            );
+
+            // 桌面环境：调用 pywebview 原生对话框
+            if (window.pywebview && window.pywebview.api) {
+                try {
+                    btn.disabled = true;
+                    btn.textContent = "选择中...";
+                    const path = isDir
+                        ? await window.pywebview.api.open_directory_dialog()
+                        : await window.pywebview.api.open_file_dialog();
+                    if (path && textInput) {
+                        textInput.value = path;  // 完整路径，不截断
+                    }
+                } catch (e) {
+                    console.error("原生对话框调用失败:", e);
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = "浏览";
+                }
+                return;
+            }
+
+            // 浏览器环境：聚焦文本框，提示手动输入
+            if (textInput) {
+                textInput.focus();
+                textInput.placeholder = isDir
+                    ? "请输入完整目录路径（如 D:\\videos）"
+                    : "请输入完整文件路径";
             }
         });
     });

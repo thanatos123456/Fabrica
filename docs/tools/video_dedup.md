@@ -515,8 +515,53 @@ run_pipeline:
     └── Stage 4: 聚类 + 输出
         ├── 并查集合并所有判重关系
         ├── 展开 L1 组
+        ├── 展开视频元信息（path/size/duration/width/height）
+        ├── 保存重复组关键帧图像（仅重复组视频，见 §3.9.3）
+        ├── 计算帧级匹配信息（利用已有 pHash 序列）
         └── 输出重复组报告
 ```
+
+#### 3.9.3 结果数据结构
+
+`run_pipeline()` 返回的 `report` 字典完整结构：
+
+```python
+report = {
+    "cancelled": False,
+    "total_videos": 1520,
+    "l1_groups": [...],           # L1 哈希分组（不变）
+    "l2_pairs": [...],            # L2 判重对（不变）
+    "l3_pairs": [...],            # L3 判重对（不变）
+    "final_groups": [             # 重复组（含视频元信息，供前端展示）
+        {
+            "level": 2,           # 组内最高判重级别（1=L1, 2=L2, 3=L3）
+            "videos": [
+                {
+                    "id": "vid_001",
+                    "path": "D:\\videos\\clip_001.mp4",
+                    "size": 10485760,
+                    "duration": 120.5,
+                    "width": 1920,
+                    "height": 1080
+                },
+                ...
+            ]
+        },
+        ...
+    ],
+    "keyframes": {                # 关键帧图像 URL 映射（仅重复组视频）
+        "vid_001": {0: "/keyframes/vid_001/frame_0000.jpg", 1: "...", ...},
+        ...
+    },
+    "matched_frames": [           # 帧级匹配信息（供前端高亮相同帧对）
+        {"a_id": "vid_001", "a_idx": 0, "b_id": "vid_002", "b_idx": 0},
+        ...
+    ],
+    "errors": [...],              # 错误记录（不变）
+}
+```
+
+> 结果结构改造的详细设计与前端渲染方案，见 [desktop_features.md](../core/desktop_features.md) §4 功能2 和 §5 功能3。
 
 ### 3.10 VideoStorage — 存储层
 
@@ -573,6 +618,8 @@ CREATE TABLE matches (
 | **save_deep(video_id, feats)** | int, ndarray | None | 保存深度特征（存为 .npy 文件） |
 | **load_deep(video_id)** | int | ndarray | 加载深度特征 |
 | **save_match(a, b, level, score)** | int, int, int, float | None | 保存判重结果 |
+| **get_video(video_id)** | str | VideoRecord \| None | 根据 ID 查询单个视频元信息（供结果展示） |
+| **get_match(a_id, b_id)** | str, str | dict \| None | 查询两视频间的判重记录（含 level/score） |
 
 #### 3.10.3 数据库迁移策略
 

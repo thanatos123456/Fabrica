@@ -18,12 +18,13 @@
 
 import json
 import os
+import hashlib
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from fabrica.tools.video_dedup.extractors.deepfeat import CLIPExtractor
+from fabrica.tools.video_dedup.extractors.deepfeat import CLIPExtractor, FEATURE_DIM
 from fabrica.tools.video_dedup.extractors.filehash import file_hash
 from fabrica.tools.video_dedup.extractors.phash import video_phash_sequence
-from fabrica.tools.video_dedup.indexing import PHashIndex
+from fabrica.tools.video_dedup.indexing import DeepIndex, PHashIndex
 from fabrica.tools.video_dedup.matching import (
     DEFAULT_SIM_THRESH,
     LEVEL2_THRESHOLD,
@@ -35,8 +36,8 @@ from fabrica.tools.video_dedup.matching import (
     sequence_score,
 )
 from fabrica.tools.video_dedup.models import VideoInfo
-from fabrica.tools.video_dedup.sampler import sample_frames
-from fabrica.tools.video_dedup.storage import VideoStorage
+from fabrica.tools.video_dedup.sampler import FRAME_INTERVAL, sample_frames
+from fabrica.tools.video_dedup.storage import VideoStorage, DEFAULT_KEYFRAME_DIR
 
 
 # ============================================================================
@@ -48,6 +49,13 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".avi", ".mov", ".mkv", ".webm",
     ".flv", ".wmv", ".m4v", ".ts",
 }
+
+# 阶段名称（用于进度上报）
+STAGE_SCAN = "扫描视频文件"
+STAGE_L1 = "L1 文件哈希去重"
+STAGE_L2 = "L2 pHash 序列比对"
+STAGE_L3 = "L3 深度特征比对"
+STAGE_CLUSTER = "聚类合成重复组"
 
 
 # ============================================================================
@@ -117,9 +125,11 @@ class CascadePipeline:
     def _cancelled(self, cancel_event) -> bool:
         return bool(cancel_event is not None and cancel_event.is_set())
 
-    def _report(self, progress_cb, percent: int, msg: str) -> None:
+    def _report(
+        self, progress_cb, percent: int, msg: str, stage: str = "",
+    ) -> None:
         if progress_cb is not None:
-            progress_cb(percent, msg)
+            progress_cb(percent, msg, stage)
 
     def _log(self, log_cb, level: str, msg: str) -> None:
         if log_cb is not None:
@@ -152,6 +162,8 @@ class CascadePipeline:
             "l2_pairs": [],
             "l3_pairs": [],
             "final_groups": [],
+            "keyframes": {},
+            "matched_frames": [],
             "errors": [],
         }
 
@@ -181,10 +193,13 @@ class CascadePipeline:
         if self._cancelled(cancel_event):
             report["cancelled"] = True
             return report
-        self._report(progress_cb, 0, "扫描视频文件")
-        videos = scan_videos(
-            cfg["input_dir"], recursive=cfg.get("recursive", False)
+        self._report(progress_cb, 0, "扫描视频文件", STAGE_SCAN)
+        recursive = cfg.get("recursive", False)
+        self._log(
+            log_cb, "info",
+            f"扫描根目录 {cfg['input_dir']}（recursive={recursive}）",
         )
+        videos = scan_videos(cfg["input_dir"], recursive=recursive)
         self.storage.register_videos(videos)
         report["total_videos"] = len(videos)
         self._log(log_cb, "info", f"扫描到 {len(videos)} 个视频")
@@ -193,12 +208,23 @@ class CascadePipeline:
         if self._cancelled(cancel_event):
             report["cancelled"] = True
             return report
-        self._report(progress_cb, 15, "L1 文件哈希去重")
-        for v in self.storage.videos_without_hash():
+        self._report(progress_cb, 0, "L1 文件哈希去重", STAGE_L1)
+        hash_videos = list(self.storage.videos_without_hash())
+        hash_n = len(hash_videos)
+        for i, v in enumerate(hash_videos):
+            self._report(
+                progress_cb,
+                round((i + 1) / hash_n * 100),
+                f"L1 文件哈希去重 [{i + 1}/{hash_n}]",
+                STAGE_L1,
+            )
+            self._log(log_cb, "info", f"L1 哈希 [{i + 1}/{hash_n}] {v.path}")
             try:
                 self.storage.set_hash(v.id, file_hash(v.path))
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(f"L1 {v.id}: {exc}")
+        if hash_n == 0:
+            self._report(progress_cb, 100, "L1 文件哈希去重", STAGE_L1)
         l1_groups = list(self.storage.group_by_hash().values())
         # 代表 = 非重复成员；每组的代表取首个
         dup_ids: set = set()
@@ -213,15 +239,34 @@ class CascadePipeline:
         if self._cancelled(cancel_event):
             report["cancelled"] = True
             return report
-        self._report(progress_cb, 40, "L2 pHash 序列比对")
+        self._report(progress_cb, 0, "L2 pHash 序列比对", STAGE_L2)
         seqs: Dict[str, Any] = {}
-        for vid in rep_ids:
+        rep_n = len(rep_ids)
+        for i, vid in enumerate(rep_ids):
+            self._report(
+                progress_cb,
+                round((i + 1) / rep_n * 100),
+                f"L2 pHash 序列比对 [{i + 1}/{rep_n}]",
+                STAGE_L2,
+            )
             path = dict((v.id, v.path) for v in videos).get(vid, vid)
             try:
-                frames, _duration = sample_frames(path)
+                frames, duration = sample_frames(
+                    path,
+                    min_frames=cfg.get("sample_min_frames", 16),
+                    max_frames=cfg.get("sample_max_frames", 100),
+                    target_fps=cfg.get("sample_target_fps", 1.0),
+                    frame_interval=cfg.get("sample_frame_interval", FRAME_INTERVAL),
+                    resize=cfg.get("sample_resize", (224, 224)),
+                )
                 if not frames:
                     report["errors"].append(f"L2 {vid}: 无法抽帧（损坏或空）")
                     continue
+                self._log(
+                    log_cb, "info",
+                    f"L2 抽帧 [{i + 1}/{rep_n}] {path}，"
+                    f"采样 {len(frames)} 帧，时长 {duration} 秒",
+                )
                 seq = video_phash_sequence(frames)
                 self.storage.save_phash(vid, seq, frames)
                 self.index.add(vid, seq)
@@ -229,6 +274,8 @@ class CascadePipeline:
                 seqs[vid] = seq
             except Exception as exc:  # noqa: BLE001
                 report["errors"].append(f"L2 {vid}: {exc}")
+        if rep_n == 0:
+            self._report(progress_cb, 100, "L2 pHash 序列比对", STAGE_L2)
 
         candidates = self.index.generate_candidates(
             rep_ids,
@@ -251,24 +298,67 @@ class CascadePipeline:
         if self._cancelled(cancel_event):
             report["cancelled"] = True
             return report
-        self._report(progress_cb, 75, "L3 深度特征比对")
+        self._report(progress_cb, 0, "L3 深度特征比对", STAGE_L3)
         if self.extractor is None:
             self._log(log_cb, "info", "L3 不可用（OpenCLIP 未安装），跳过深度比对")
+            self._report(progress_cb, 100, "L3 深度特征比对（跳过）", STAGE_L3)
         else:
-            for a, b, _score in suspects:
+            # 收集疑似对涉及的所有视频，统一提取特征并建立深度特征索引
+            suspect_vids: List[str] = sorted(
+                {vid for pair in suspects for vid in pair[:2]}
+            )
+            deep_index = DeepIndex(
+                dim=FEATURE_DIM,
+                k=cfg.get("l3_search_k", 32),
+            )
+            suspect_n = len(suspect_vids)
+            for i, vid in enumerate(suspect_vids):
+                self._report(
+                    progress_cb,
+                    round((i + 1) / suspect_n * 100),
+                    f"L3 深度特征比对 [{i + 1}/{suspect_n}]",
+                    STAGE_L3,
+                )
                 try:
-                    fa = self.extractor.extract(
-                        [f.image for f in self._frame_cache[a]]
+                    frames = self._frame_cache.get(vid)
+                    if not frames:
+                        report["errors"].append(f"L3 {vid}: 无缓存帧，跳过")
+                        continue
+                    feats = self.extractor.extract(
+                        [f.image for f in frames]
                     )
-                    fb = self.extractor.extract(
-                        [f.image for f in self._frame_cache[b]]
+                    self._log(
+                        log_cb, "info",
+                        f"L3 提取 [{i + 1}/{suspect_n}] {vid}，"
+                        f"{len(feats)} 帧",
                     )
+                    self.storage.save_deep(vid, feats)
+                    deep_index.add(vid, feats)
+                except Exception as exc:  # noqa: BLE001
+                    report["errors"].append(f"L3 {vid}: {exc}")
+
+            # 用深度索引检索近邻生成候选对，再逐对深度序列打分
+            deep_candidates = deep_index.generate_candidates(
+                suspect_vids,
+                hit_threshold=cfg.get("l3_hit_threshold", 1),
+                k=cfg.get("l3_search_k", 32),
+                sim_thresh=l3_sim_thresh,
+            )
+            for a, b in deep_candidates:
+                try:
+                    # 复用索引缓存的特征序列，避免重复提取
+                    fa = deep_index._videos.get(a)
+                    fb = deep_index._videos.get(b)
+                    if fa is None or fb is None:
+                        continue
                     dscore = deep_sequence_score(fa, fb, sim_thresh=l3_sim_thresh)
                     if dscore >= l3_confirm:
                         report["l3_pairs"].append([a, b, float(dscore)])
                         self.storage.save_match(a, b, 3, float(dscore))
                 except Exception as exc:  # noqa: BLE001
                     report["errors"].append(f"L3 {a}-{b}: {exc}")
+            if suspect_n == 0:
+                self._report(progress_cb, 100, "L3 深度特征比对", STAGE_L3)
             self._log(
                 log_cb, "info",
                 f"L3 判重 {len(report['l3_pairs'])} 对",
@@ -278,14 +368,31 @@ class CascadePipeline:
         if self._cancelled(cancel_event):
             report["cancelled"] = True
             return report
-        self._report(progress_cb, 90, "聚类合成重复组")
+        # L3 可用时聚类从 L3 结束值起步，否则从 L2 结束值起步
+        self._report(progress_cb, 0, "聚类合成重复组", STAGE_CLUSTER)
         all_matches: List[tuple] = [
             (a, b) for a, b, _ in report["l2_pairs"]
         ] + [(a, b) for a, b, _ in report["l3_pairs"]]
+        # L3 不可用时，将 L2 疑似对（score ≥ 疑似阈值）也纳入聚类，
+        # 避免跳过 L3 时因 L2 保守判定而漏判（如分辨率差异导致的疑似）
+        if self.extractor is None:
+            all_matches += [(a, b) for a, b, _ in suspects]
         final_groups = self._cluster(all_ids, all_matches, l1_groups)
-        report["final_groups"] = final_groups
+        report["final_groups"] = self._enrich_groups(final_groups)
+        # T6.3: 保存关键帧 + 计算帧级匹配
+        if report["final_groups"]:
+            report["keyframes"] = self._save_keyframes(
+                report["final_groups"], cfg, report["errors"],
+            )
+            report["matched_frames"] = self._compute_matched_frames(
+                report["final_groups"], frame_thresh,
+            )
+        self._log(
+            log_cb, "info",
+            f"聚类完成，最终去重组 {len(final_groups)} 组",
+        )
 
-        self._report(progress_cb, 100, "完成")
+        self._report(progress_cb, 100, "完成", STAGE_CLUSTER)
         self._write_report(report, cfg.get("output"))
         return report
 
@@ -316,6 +423,177 @@ class CascadePipeline:
         int_groups = build_groups(len(all_ids), int_matches)
         id_groups = [[idx_arr[i] for i in group] for group in int_groups]
         return expand_groups(l1_groups, id_groups)
+
+    def _enrich_groups(
+        self, raw_groups: List[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """将原始 ID 分组展开为含元信息的结构化分组。
+
+        Args:
+            raw_groups: 纯 video ID 列表的分组。
+
+        Returns:
+            [{"level": int, "videos": [{"id", "path", "size",
+             "duration", "width", "height"}, ...]}, ...]
+        """
+        enriched: List[Dict[str, Any]] = []
+        for group_ids in raw_groups:
+            videos_info = []
+            for vid in group_ids:
+                v = self.storage.get_video(vid)
+                if v is None:
+                    continue
+                videos_info.append({
+                    "id": v.id,
+                    "path": v.path,
+                    "size": v.size,
+                    "duration": v.duration,
+                    "width": v.width,
+                    "height": v.height,
+                })
+            if len(videos_info) < 2:
+                continue
+            # 确定组内最高判重级别
+            max_level = 1
+            for i in range(len(videos_info)):
+                for j in range(i + 1, len(videos_info)):
+                    match = self.storage.get_match(
+                        videos_info[i]["id"], videos_info[j]["id"],
+                    )
+                    if match and match["level"] > max_level:
+                        max_level = match["level"]
+            enriched.append({
+                "level": max_level,
+                "videos": videos_info,
+            })
+        return enriched
+
+    # ---- 关键帧保存（T6.3）----
+
+    @staticmethod
+    def _safe_dir_name(video_id: str) -> str:
+        """将 video_id 转为安全目录名（MD5 哈希）。"""
+        return hashlib.md5(video_id.encode("utf-8")).hexdigest()
+
+    def _save_keyframes(
+        self, final_groups: List[Dict[str, Any]], cfg: Dict[str, Any],
+        errors: List[str],
+    ) -> Dict[str, Dict[int, str]]:
+        """对重复组视频重新抽帧并保存 JPEG 关键帧图像。
+
+        使用与 L2 相同的采样参数确保帧索引一致。从所有采样帧中
+        均匀选取最多 5 帧保存。非重复组视频不保存关键帧。
+        单个视频保存失败时跳过并记录错误。
+
+        Args:
+            final_groups: 结构化重复组列表。
+            cfg: 配置字典（读取采样参数）。
+            errors: 错误收集列表（失败时追加）。
+
+        Returns:
+            {video_id: {frame_idx: "/keyframes/{hash}/frame_{idx:04d}.jpg"}}
+        """
+        MAX_KEYFRAMES = 5
+        keyframes: Dict[str, Dict[int, str]] = {}
+        for group in final_groups:
+            for v in group.get("videos", []):
+                vid = v["id"]
+                path = v["path"]
+                try:
+                    frames, _ = sample_frames(
+                        path,
+                        min_frames=cfg.get("sample_min_frames", 16),
+                        max_frames=cfg.get("sample_max_frames", 100),
+                        target_fps=cfg.get("sample_target_fps", 1.0),
+                        frame_interval=cfg.get(
+                            "sample_frame_interval", FRAME_INTERVAL,
+                        ),
+                        resize=cfg.get("sample_resize", (224, 224)),
+                    )
+                    if not frames:
+                        continue
+                    # 均匀选取最多 MAX_KEYFRAMES 帧（保留原始帧索引）
+                    if len(frames) > MAX_KEYFRAMES:
+                        step = len(frames) / MAX_KEYFRAMES
+                        selected = [
+                            frames[int(i * step)]
+                            for i in range(MAX_KEYFRAMES)
+                        ]
+                    else:
+                        selected = frames
+                    dir_name = self._safe_dir_name(vid)
+                    out_dir = os.path.join(DEFAULT_KEYFRAME_DIR, dir_name)
+                    os.makedirs(out_dir, exist_ok=True)
+                    url_map: Dict[int, str] = {}
+                    for f in selected:
+                        fname = f"frame_{f.idx:04d}.jpg"
+                        f.image.save(
+                            os.path.join(out_dir, fname),
+                            "JPEG",
+                            quality=85,
+                        )
+                        url_map[f.idx] = f"/keyframes/{dir_name}/{fname}"
+                    keyframes[vid] = url_map
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"keyframe {vid}: {exc}")
+        return keyframes
+
+    def _compute_matched_frames(
+        self, final_groups: List[Dict[str, Any]], frame_thresh: int,
+    ) -> List[Dict[str, Any]]:
+        """计算重复组内视频间的帧级匹配信息。
+
+        对每组内视频两两计算，利用 storage.load_phash() 加载已存储
+        的 pHash 序列，用单调贪心匹配找出 Hamming 距离 ≤ frame_thresh
+        的帧对。
+
+        Args:
+            final_groups: 结构化重复组列表。
+            frame_thresh: 帧汉明距离命中阈值。
+
+        Returns:
+            [{"a_id", "a_idx", "b_id", "b_idx"}, ...]
+        """
+        import numpy as np
+
+        matched: List[Dict[str, Any]] = []
+        for group in final_groups:
+            videos = group.get("videos", [])
+            for i in range(len(videos)):
+                for j in range(i + 1, len(videos)):
+                    a, b = videos[i], videos[j]
+                    seq_a = self.storage.load_phash(a["id"])
+                    seq_b = self.storage.load_phash(b["id"])
+                    arr_a = np.asarray(seq_a).astype(np.uint64)
+                    arr_b = np.asarray(seq_b).astype(np.uint64)
+                    if arr_a.size == 0 or arr_b.size == 0:
+                        continue
+                    # 以短序列为基准
+                    if arr_a.size > arr_b.size:
+                        short, long_ = arr_b, arr_a
+                        swapped = True
+                    else:
+                        short, long_ = arr_a, arr_b
+                        swapped = False
+                    dists = np.bitwise_count(
+                        short[:, None] ^ long_[None, :]
+                    )
+                    n_short, n_long = dists.shape
+                    long_ptr = 0
+                    for si in range(n_short):
+                        for li in range(long_ptr, n_long):
+                            if int(dists[si, li]) <= frame_thresh:
+                                if swapped:
+                                    a_idx, b_idx = li, si
+                                else:
+                                    a_idx, b_idx = si, li
+                                matched.append({
+                                    "a_id": a["id"], "a_idx": a_idx,
+                                    "b_id": b["id"], "b_idx": b_idx,
+                                })
+                                long_ptr = li + 1
+                                break
+        return matched
 
     # ---- 输出 ----
 

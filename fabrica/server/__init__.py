@@ -4,6 +4,7 @@
 """
 
 import os
+import sys
 import time
 from typing import Any, Dict, Optional
 
@@ -19,7 +20,14 @@ from fabrica.server.routes import router
 
 # __file__ 位于 nexus/Fabrica/fabrica/server/__init__.py
 # 向上两级到达 fabrica 包根目录（nexus/Fabrica/fabrica/）
-_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 在 PyInstaller 打包环境下，__file__ 指向 _MEIPASS 内的临时目录，
+# 此时需要从 sys._MEIPASS 解析静态资源路径。
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _PACKAGE_ROOT = os.path.join(sys._MEIPASS, "fabrica")
+else:
+    _PACKAGE_ROOT = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    )
 
 
 def create_app(
@@ -101,17 +109,37 @@ def create_app(
     else:
         logger.warning("静态资源目录不存在，跳过挂载: %s", static_path)
 
+    # ---- 7b. 挂载关键帧图像目录（T6.3）----
+    from fabrica.tools.video_dedup.storage import DEFAULT_KEYFRAME_DIR
+    # 兼容 PyInstaller：开发环境用默认路径，打包后使用 exe 同级 data 目录
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        _exe_dir = os.path.dirname(sys.executable)
+        _keyframe_dir = os.path.join(_exe_dir, "data", "keyframes")
+    else:
+        _keyframe_dir = DEFAULT_KEYFRAME_DIR
+    if os.path.isdir(_keyframe_dir):
+        app.mount(
+            "/keyframes",
+            StaticFiles(directory=_keyframe_dir),
+            name="keyframes",
+        )
+
     # ---- 8. 挂接 API 路由 ----
     app.include_router(router)
 
     # ---- 9. 基础路由 ----
     @app.get("/")
     async def root():
-        """根路由，返回平台欢迎信息。"""
+        """根路由：返回 Web 前端入口 index.html。"""
+        from fastapi.responses import FileResponse
+        index_path = os.path.join(static_path, "index.html")
+        if os.path.isfile(index_path):
+            return FileResponse(index_path, media_type="text/html")
         return {
             "name": "Fabrica",
             "version": "0.1.0",
             "status": "running",
+            "message": "index.html not found",
         }
 
     @app.get("/health")

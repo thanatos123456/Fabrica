@@ -189,7 +189,8 @@ input[type="checkbox"] { width: auto; transform: scale(1.2); cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 
 /* ---- 进度条 ---- */
-.progress-wrap { margin: 16px 0; }
+.stage-label { font-weight: 600; font-size: 14px; margin: 16px 0 4px; color: var(--color-text); }
+.progress-wrap { margin: 8px 0 16px; }
 .progress-bar {
     height: 14px;
     border-radius: 7px;
@@ -272,6 +273,130 @@ input[type="checkbox"] { width: auto; transform: scale(1.2); cursor: pointer; }
 .muted { color: var(--color-muted); }
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .spacer { flex: 1; }
+
+/* ---- 验重结果卡片（T6.2）---- */
+.dedup-summary {
+    color: var(--color-muted);
+    font-size: 14px;
+    margin: 16px 0;
+    padding: 10px 14px;
+    background: var(--color-bg);
+    border-radius: var(--radius);
+}
+.dedup-group {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow);
+}
+.dedup-group-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+.level-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.level-badge.level-1 { color: var(--color-warning); border: 1px solid var(--color-warning); }
+.level-badge.level-2 { color: var(--color-primary); border: 1px solid var(--color-primary); }
+.level-badge.level-3 { color: var(--color-danger); border: 1px solid var(--color-danger); }
+.dedup-video-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--color-border);
+    flex-wrap: wrap;
+}
+.dedup-video-item:last-child { border-bottom: none; }
+.dedup-video-path {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.dedup-video-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--color-muted);
+}
+.dedup-video-meta span { white-space: nowrap; }
+
+/* ---- 关键帧网格（T6.3）---- */
+.keyframe-section {
+    margin-top: 14px;
+    border-top: 1px solid var(--color-border);
+    padding-top: 12px;
+}
+.keyframe-section-header {
+    font-size: 13px;
+    color: var(--color-muted);
+    margin-bottom: 8px;
+}
+.keyframe-grid {
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+}
+.keyframe-column {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 100px;
+}
+.keyframe-col-label {
+    font-size: 12px;
+    color: var(--color-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+}
+.kf-thumb {
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: border-color 0.2s;
+}
+.kf-thumb.matched-frame {
+    border-color: var(--color-primary);
+}
+.kf-thumb:hover {
+    border-color: var(--color-warning);
+}
+.keyframe-lightbox {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    cursor: pointer;
+}
+.keyframe-lightbox img {
+    max-width: 90vw;
+    max-height: 90vh;
+    border-radius: 8px;
+}
 
 /* ---- 响应式 ---- */
 @media (max-width: 640px) {

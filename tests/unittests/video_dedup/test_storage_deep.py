@@ -59,10 +59,11 @@ class TestSaveLoadDeep(DeepStorageTest):
         self.assertEqual(loaded.dtype, np.float32)
 
     def test_file_exists_with_naming(self):
-        """保存后生成 {video_id}.npy 文件。"""
+        """保存后生成 {md5(video_id)}.npy 文件。"""
         self.storage.save_deep("v1", _feats(3))
+        expected = VideoStorage._safe_feature_name("v1")
         self.assertTrue(
-            os.path.exists(os.path.join(self.feature_dir, "v1.npy"))
+            os.path.exists(os.path.join(self.feature_dir, expected))
         )
 
     def test_load_missing_returns_empty(self):
@@ -106,25 +107,46 @@ class TestFeatureDir(DeepStorageTest):
 class TestSafeFeatureName(unittest.TestCase):
     """_safe_feature_name 测试。"""
 
-    def test_simple_id(self):
-        """简单 id 保持 {id}.npy。"""
-        self.assertEqual(VideoStorage._safe_feature_name("v1"), "v1.npy")
+    def test_returns_npy_extension(self):
+        """返回值以 .npy 结尾。"""
+        name = VideoStorage._safe_feature_name("v1")
+        self.assertTrue(name.endswith(".npy"))
 
-    def test_path_like_id(self):
-        """路径型 id 的分隔符被替换为 _。"""
-        name = VideoStorage._safe_feature_name("/data/video.mp4")
-        self.assertEqual(name, "_data_video.mp4.npy")
-        self.assertNotIn("/", name)
+    def test_no_path_separators_or_colon(self):
+        """文件名不含路径分隔符或冒号。"""
+        for vid in ["/data/video.mp4", "a\\b.mp4", "H:\\wallpaper\\x.mp4"]:
+            name = VideoStorage._safe_feature_name(vid)
+            self.assertNotIn("/", name)
+            self.assertNotIn("\\", name)
+            self.assertNotIn(":", name)
 
-    def test_leading_dot_stripped(self):
-        """开头的点被去除。"""
-        self.assertEqual(VideoStorage._safe_feature_name(".secret"), "secret.npy")
-
-    def test_backslash_replaced(self):
-        """反斜杠被替换。"""
+    def test_deterministic(self):
+        """相同输入产生相同输出。"""
         self.assertEqual(
-            VideoStorage._safe_feature_name("a\\b.mp4"), "a_b.mp4.npy"
+            VideoStorage._safe_feature_name("v1"),
+            VideoStorage._safe_feature_name("v1"),
         )
+
+    def test_different_inputs_different_names(self):
+        """不同输入产生不同输出。"""
+        self.assertNotEqual(
+            VideoStorage._safe_feature_name("v1"),
+            VideoStorage._safe_feature_name("v2"),
+        )
+
+    def test_windows_path_safe(self):
+        """Windows 盘符路径生成安全文件名（回归测试）。
+
+        修复前：H:\\wallpaper\\x.mp4 → H:_wallpaper_x.mp4.npy，
+        os.path.join 将 H: 解释为盘符切换，文件创建在错误盘符位置。
+        修复后：使用 MD5 哈希，无盘符问题。
+        """
+        name = VideoStorage._safe_feature_name("H:\\wallpaper\\x.mp4")
+        self.assertNotIn(":", name)
+        self.assertNotIn("\\", name)
+        self.assertTrue(name.endswith(".npy"))
+        # 文件名应为 32 字符 MD5 + .npy
+        self.assertEqual(len(name), 36)
 
 
 class TestPathIdRoundtrip(DeepStorageTest):

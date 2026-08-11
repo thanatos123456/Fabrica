@@ -91,7 +91,8 @@ class EndToEndTest(unittest.TestCase):
         def in_same_group(a, b):
             def has(group, name):
                 return any(
-                    os.path.basename(item) == name for item in group
+                    os.path.basename(v["path"]) == name
+                    for v in group.get("videos", [])
                 )
             return any(
                 has(group, os.path.basename(a))

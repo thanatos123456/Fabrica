@@ -5,6 +5,7 @@
 
 import { api } from "../api.js";
 import { FabricaWS } from "../ws.js";
+import { renderDedupResult } from "./dedup-result.js";
 
 const STATUS_BADGE = {
     pending: "warning", validating: "warning", valid: "warning", running: "warning",
@@ -34,6 +35,7 @@ export async function renderTaskProgress(container, taskId) {
                 <span class="muted">工具</span>
                 <span>${escapeHtml(detail.tool_name)}</span>
             </div>
+            <div class="stage-label" id="stage-label"></div>
             <div class="progress-wrap">
                 <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:${detail.progress || 0}%"></div></div>
                 <div class="progress-text" id="progress-text">${detail.progress || 0}%</div>
@@ -65,29 +67,44 @@ export async function renderTaskProgress(container, taskId) {
         onProgress: (ev) => {
             const fill = document.getElementById("progress-fill");
             const text = document.getElementById("progress-text");
+            const stage = document.getElementById("stage-label");
             if (fill) fill.style.width = `${ev.percent}%`;
             if (text) text.textContent = `${ev.percent}% ${ev.message || ""}`;
+            if (stage && ev.stage) stage.textContent = ev.stage;
         },
         onLog: (ev) => appendLog(container, { level: ev.level, message: ev.message, timestamp: new Date().toISOString() }),
         onComplete: (ev) => {
             setStatus(container, "completed");
             const box = document.getElementById("result-box");
             if (box && ev.result !== undefined) {
-                box.innerHTML = `<div class="result-box">${escapeHtml(JSON.stringify(ev.result, null, 2))}</div>`;
+                if (ev.result.tool === "video_dedup" && ev.result.report) {
+                    renderDedupResult(box, ev.result.report);
+                } else {
+                    box.innerHTML = `<div class="result-box">${escapeHtml(JSON.stringify(ev.result, null, 2))}</div>`;
+                }
             }
             const fill = document.getElementById("progress-fill");
             if (fill) fill.style.width = "100%";
+            const cancelBtn = document.getElementById("cancel-btn");
+            if (cancelBtn) cancelBtn.style.display = "none";
             ws.close();
         },
         onError: (ev) => {
             setStatus(container, "failed");
             const box = document.getElementById("result-box");
             if (box) box.innerHTML = `<div class="error-tip">${escapeHtml(ev.error || "执行失败")}</div>`;
+            const cancelBtn = document.getElementById("cancel-btn");
+            if (cancelBtn) cancelBtn.style.display = "none";
             ws.close();
         },
         onClose: () => {
-            const text = document.getElementById("progress-text");
-            if (text) text.textContent = `${text.textContent}（已断开）`;
+            // 仅在未完成时显示断开提示（完成/失败后 ws.close 触发 onClose 不需提示）
+            const statusEl = document.getElementById("task-status");
+            const status = statusEl?.textContent;
+            if (status && !["completed", "failed", "cancelled"].includes(status)) {
+                const text = document.getElementById("progress-text");
+                if (text) text.textContent = `${text.textContent}（已断开）`;
+            }
         },
     });
     ws.connect();

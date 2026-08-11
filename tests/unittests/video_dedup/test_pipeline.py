@@ -98,6 +98,11 @@ class BasePipelineTest(unittest.TestCase):
         )
         self.storage.videos_without_hash.return_value = self.videos
         self.storage.group_by_hash.return_value = {}
+        # T6.2: get_video / get_match 供 _enrich_groups 使用
+        self.storage.get_video.side_effect = lambda vid: _make_video(vid)
+        self.storage.get_match.return_value = None
+        # T6.3: load_phash 供 _compute_matched_frames 使用
+        self.storage.load_phash.return_value = _seq(5)
         self.index.generate_candidates.return_value = []
         self.pipeline_cls = pipeline.CascadePipeline
         for p in self.patchers:
@@ -128,6 +133,8 @@ class TestCompleteFlow(BasePipelineTest):
         self.assertEqual(report["l3_pairs"], [])
         self.assertEqual(report["final_groups"], [])
         self.assertEqual(report["errors"], [])
+        self.assertEqual(report["keyframes"], {})
+        self.assertEqual(report["matched_frames"], [])
         # 每个视频都注册并抽帧
         self.storage.register_videos.assert_called_once_with(self.videos)
         self.assertEqual(self.storage.save_phash.call_count, 3)
@@ -193,7 +200,7 @@ class TestFaultTolerance(BasePipelineTest):
 
     def test_sampling_error_is_skipped(self):
         """某个视频抽帧失败时记入 errors，其余正常处理。"""
-        def fake_sample(path):
+        def fake_sample(path, **kwargs):
             if path == "v2":
                 raise RuntimeError("decode failed")
             return self.frames, 1.0
@@ -230,7 +237,14 @@ class TestCluster(BasePipelineTest):
             self.pipeline, "sequence_score", return_value=0.95
         ):
             report = self._run()
-        self.assertIn(["v1", "v10", "v2"], report["final_groups"])
+        # T6.2: final_groups 为结构化 dict，检查组内是否包含 v1/v10/v2
+        found = any(
+            {"v1", "v10", "v2"}.issubset(
+                {v["id"] for v in group["videos"]}
+            )
+            for group in report["final_groups"]
+        )
+        self.assertTrue(found)
 
 
 class TestOutputFile(BasePipelineTest):

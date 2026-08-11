@@ -84,6 +84,26 @@ class TestVideoStorage(unittest.TestCase):
         self.assertNotIn("v1", ids)
         self.assertIn("v2", ids)
 
+    def test_register_keeps_existing_hash(self):
+        """再次注册同 id（扫描得 file_hash=''）不应清空已缓存哈希。"""
+        self._register_three()
+        self.storage.set_hash("v1", "H1")
+        # 模拟再次扫描注册：同一 id，元信息变化，file_hash 为空
+        self.storage.register_videos(
+            [VideoInfo(id="v1", path="/a.mp4", size=999)]
+        )
+        ids = {v.id for v in self.storage.videos_without_hash()}
+        self.assertNotIn("v1", ids)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT size, file_hash FROM videos WHERE id='v1'"
+            ).fetchone()
+            self.assertEqual(row[0], 999)   # 元信息已更新
+            self.assertEqual(row[1], "H1")  # 哈希缓存保留
+        finally:
+            conn.close()
+
     def test_group_by_hash_returns_duplicates_only(self):
         """group_by_hash 应仅返回重复分组。"""
         self._register_three()

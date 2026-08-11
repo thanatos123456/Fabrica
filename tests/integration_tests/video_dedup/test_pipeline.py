@@ -36,8 +36,11 @@ def _run_pipeline(input_dir):
 
 
 def _contains(group, name):
-    """判断组内是否存在指定 basename。"""
-    return any(os.path.basename(item) == name for item in group)
+    """判断结构化 group（dict）中是否包含指定 basename 的视频。"""
+    return any(
+        os.path.basename(v["path"]) == name
+        for v in group.get("videos", [])
+    )
 
 
 def _group_contains(report, a, b):

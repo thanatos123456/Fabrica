@@ -18,10 +18,11 @@
 """
 
 import os
+import sys
 import sqlite3
 import struct
 import threading
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -35,9 +36,13 @@ from fabrica.tools.video_dedup.sampler import SampledFrame
 
 # 本文件位于 fabrica/tools/video_dedup/storage.py，
 # 上溯 4 级到达项目根目录 nexus/Fabrica/
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_TOOLS_DIR = os.path.dirname(_CURRENT_DIR)
-_FABRICA_DIR = os.path.dirname(os.path.dirname(_TOOLS_DIR))
+# PyInstaller 打包后 __file__ 指向 _MEIPASS 临时目录，改用 sys.executable 定位
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _FABRICA_DIR = os.path.dirname(sys.executable)
+else:
+    _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _TOOLS_DIR = os.path.dirname(_CURRENT_DIR)
+    _FABRICA_DIR = os.path.dirname(os.path.dirname(_TOOLS_DIR))
 DEFAULT_DB_PATH = os.path.join(
     _FABRICA_DIR, "data", "video_dedup", "dedup.db"
 )
@@ -45,6 +50,8 @@ DEFAULT_DB_PATH = os.path.join(
 DEFAULT_FEATURE_DIR = os.path.join(
     _FABRICA_DIR, "data", "video_dedup_features"
 )
+# 关键帧图像目录（T6.3）
+DEFAULT_KEYFRAME_DIR = os.path.join(_FABRICA_DIR, "data", "keyframes")
 
 # 深度特征维度（与 CLIPExtractor.extract 输出一致）
 DEEP_FEATURE_DIM = 512
@@ -172,9 +179,12 @@ class VideoStorage:
     # ---- 视频元信息 ----
 
     def register_videos(self, video_list: Sequence[VideoInfo]) -> None:
-        """批量注册视频元信息。
+        """批量注册视频元信息（upsert）。
 
-        已存在的 id 将被覆盖更新。
+        以 id 为键做 upsert：仅更新元信息字段（path/size/duration/
+        width/height/frame_count），保留已计算的 file_hash / phash_done /
+        deep_done。这样扫描得到的 file_hash='' 不会覆盖掉已缓存哈希，
+        使 L1 哈希可跨运行复用、避免重复计算。
 
         Args:
             video_list: VideoInfo 列表。
@@ -182,14 +192,21 @@ class VideoStorage:
         with self._lock:
             self._conn.executemany(
                 """
-                INSERT OR REPLACE INTO videos
+                INSERT INTO videos
                     (id, path, size, duration, width, height,
                      file_hash, phash_done, deep_done, frame_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, '', 0, 0, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    path = excluded.path,
+                    size = excluded.size,
+                    duration = excluded.duration,
+                    width = excluded.width,
+                    height = excluded.height,
+                    frame_count = excluded.frame_count
                 """,
                 [
                     (v.id, v.path, v.size, v.duration, v.width, v.height,
-                     v.file_hash, 0, 0, v.frame_count)
+                     v.frame_count)
                     for v in video_list
                 ],
             )
@@ -209,6 +226,48 @@ class VideoStorage:
                 """
             ).fetchall()
         return [self._row_to_video(r) for r in rows]
+
+    def get_video(self, video_id: str) -> Optional[VideoInfo]:
+        """按 id 查询单个视频元信息。
+
+        Args:
+            video_id: 视频标识。
+
+        Returns:
+            VideoInfo 或 None（不存在时）。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM videos WHERE id = ?", (video_id,)
+            ).fetchone()
+        return self._row_to_video(row) if row else None
+
+    def get_match(
+        self, a_id: str, b_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """查询两个视频间的判重结果（双向匹配）。
+
+        matches 表以 (a_id, b_id) 为主键，候选对方向可能不一致，
+        因此同时匹配 (a_id, b_id) 和 (b_id, a_id)。
+
+        Args:
+            a_id: 视频 A 标识。
+            b_id: 视频 B 标识。
+
+        Returns:
+            {"level": int, "score": float} 或 None（无记录时）。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT level, score FROM matches
+                WHERE (a_id=? AND b_id=?) OR (a_id=? AND b_id=?)
+                """,
+                (a_id, b_id, b_id, a_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"level": row["level"], "score": row["score"]}
 
     def set_hash(self, video_id: str, hash_val: str) -> None:
         """设置视频的文件哈希值。
@@ -315,19 +374,21 @@ class VideoStorage:
 
     @staticmethod
     def _safe_feature_name(video_id: str) -> str:
-        """将 video_id 转为安全文件名（{video_id}.npy）。
+        """将 video_id 转为安全文件名（{hash}.npy）。
 
-        替换路径分隔符（/、\\）与开头的点，避免生成非法或嵌套文件名。
+        使用 MD5 哈希生成固定长度文件名，避免路径中的非法字符
+        （特别是 Windows 盘符冒号 ``:`` 导致 os.path.join 盘符切换，
+        使文件创建在错误盘符位置）。
 
         Args:
-            video_id: 视频标识。
+            video_id: 视频标识（文件完整路径）。
 
         Returns:
-            形如 {safe}.npy 的文件名。
+            形如 {md5hex}.npy 的文件名，固定 36 字符。
         """
-        safe = video_id.replace("/", "_").replace("\\", "_")
-        safe = safe.lstrip(".")
-        return f"{safe}.npy"
+        import hashlib
+        h = hashlib.md5(video_id.encode("utf-8")).hexdigest()
+        return f"{h}.npy"
 
     def save_deep(self, video_id: str, feats: np.ndarray) -> None:
         """保存视频的深度特征（.npy 文件）。
