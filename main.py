@@ -18,6 +18,15 @@ import sys
 import os
 import argparse
 import signal
+import threading
+import platform
+
+# PyInstaller console=False 时 sys.stdout/stderr 为 None，重定向到 devnull
+# 必须在任何 fabrica/aurora 导入之前执行，否则 helios ConsoleHandler 会捕获 None
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w', encoding='utf-8')
 
 
 # ============================================================================
@@ -210,9 +219,64 @@ def main():
         signal.signal(signal.SIGINT, handle_shutdown)
         signal.signal(signal.SIGTERM, handle_shutdown)
 
-        # ---- 7. 启动服务 ----
-        logger.info("服务已启动，等待请求...")
-        server.run()
+        # ---- 7. 判断 dev_mode（桌面窗口 vs 浏览器回退）----
+        from fabrica.desktop import (
+            launch_window, launch_browser, wait_for_server,
+        )
+
+        dev_mode = get_config('fabrica.desktop.dev_mode', False)
+        # Linux 开发环境默认回退浏览器模式（pywebview 依赖 GUI 库）
+        if platform.system() == 'Linux' and not dev_mode:
+            dev_mode = True
+
+        if dev_mode:
+            # ---- 7a. 浏览器回退模式 ----
+            logger.info("dev_mode 已启用，使用浏览器回退模式")
+            launch_browser(host, port)
+            logger.info("服务已启动，等待请求...")
+            server.run()
+        else:
+            # ---- 7b. pywebview 桌面窗口模式 ----
+            server_thread = threading.Thread(
+                target=server.run,
+                daemon=True,
+                name="uvicorn-server",
+            )
+            server_thread.start()
+
+            logger.info("等待服务端口就绪...")
+            if not wait_for_server(host, port, timeout=10.0):
+                logger.error("服务启动超时，无法打开窗口")
+                sys.exit(1)
+
+            logger.info("服务已就绪，启动桌面窗口...")
+
+            def on_window_close():
+                """窗口关闭回调：触发 uvicorn 优雅停止。"""
+                logger.info("桌面窗口已关闭，正在停止服务...")
+                server.should_exit = True
+
+            window_title = get_config(
+                'fabrica.desktop.window_title', 'Fabrica 工具集平台'
+            )
+            window_width = get_config('fabrica.desktop.width', 1280)
+            window_height = get_config('fabrica.desktop.height', 800)
+            window_min_size = tuple(
+                get_config('fabrica.desktop.min_size', [1024, 600])
+            )
+
+            launch_window(
+                host=host,
+                port=port,
+                title=window_title,
+                width=window_width,
+                height=window_height,
+                min_size=window_min_size,
+                on_close=on_window_close,
+            )
+
+            # 窗口关闭后，等待服务线程退出
+            server_thread.join(timeout=5.0)
 
         # ---- 8. 优雅关闭资源池 ----
         tool.shutdown()
@@ -229,4 +293,19 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        # PyInstaller 打包后 console=False 时，异常输出不可见；
+        # 写入 crash.log 便于排查（打包后写到 exe 同级目录）
+        import traceback, datetime
+        if getattr(sys, 'frozen', False):
+            crash_dir = os.path.dirname(sys.executable)
+        else:
+            crash_dir = os.path.dirname(os.path.abspath(__file__))
+        crash_path = os.path.join(crash_dir, 'crash.log')
+        with open(crash_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'=' * 60}\n")
+            f.write(f"Crash at {datetime.datetime.now()}\n")
+            f.write(traceback.format_exc())
+        raise

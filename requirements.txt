@@ -5,6 +5,9 @@
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 
+# 桌面窗口（T3.6）
+pywebview>=4.0
+
 # 配置与数据校验
 pydantic>=2.0.0
 PyYAML>=6.0
