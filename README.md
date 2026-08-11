@@ -194,11 +194,15 @@
 
 | 方案 | 说明 |
 |------|------|
-| **Web 前端（选用）** | 本地 FastAPI 服务 + 浏览器渲染。开发时访问 `localhost`，打包后自动打开系统浏览器。跨平台无依赖，前端技术栈通用。 |
+| **pywebview 桌面窗口（选用）** | 本地 FastAPI 服务 + pywebview 原生窗口壳。Windows 打包后双击 exe 直接弹出独立桌面窗口（隐藏控制台），内嵌 WebView 渲染现有 Web 前端；Linux 开发环境回退为浏览器自动打开。复用 Python 技术栈，体积增量小。 |
+| Web 前端 + 系统浏览器 | 本地 FastAPI 服务 + 浏览器渲染。实现简单，但浏览器标签页缺乏"软件"感，关闭标签不退出进程，不符合桌面应用心智。 |
 | PyQt/PySide | 原生桌面体验好，但打包体积大，依赖较复杂，开发调试不如 Web 灵活。 |
 | Tkinter | 标准库无需额外依赖，但 UI 表现力有限，难以构建现代化的工具界面。 |
+| Electron/Tauri | 最原生的桌面体验，但需引入 Node.js/Rust 生态，工程量大。作为未来可选升级方向。 |
 
-选择 Web 方案的核心原因：**Linux 开发与 Windows 部署使用完全相同的代码**，无需为不同平台维护两套 GUI 实现；前端轻量可替换，未来可平滑过渡到 Electron 或 Tauri 等原生壳。
+选择 pywebview 桌面窗口方案的核心原因：**Linux 开发与 Windows 部署使用完全相同的代码**，无需为不同平台维护两套 GUI 实现；exe 打开后直接弹出原生窗口，符合"像样的软件界面"的用户期望；前端轻量可替换，未来可平滑过渡到 Electron 或 Tauri 等原生壳。
+
+> 详细的桌面集成设计见 [docs/core/desktop_integration.md](./docs/core/desktop_integration.md)。
 
 ### 2.5 前端路由设计
 
@@ -736,7 +740,7 @@ pytest tests/tools/test_video_dedup/ -k "test_pipeline_small"
 
 ```bash
 # 安装打包依赖
-pip install pyinstaller
+pip install pyinstaller pywebview
 
 # 执行打包（onedir 单目录模式）
 pyinstaller build_win.spec --clean
@@ -768,6 +772,7 @@ a = Analysis(
          "aurora.python.phoenix", "aurora.python.hestia"]  # 本地 aurora 包
         + collect_submodules("fabrica.tools.video_dedup")   # 工具子模块
         + ["open_clip", "faiss", "av"]                      # 第三方重依赖
+        + ["pywebview", "pywebview.platforms.winforms"]     # 桌面窗口壳
     ),
     hookspath=[],
     hooksconfig={},
@@ -780,7 +785,7 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [], exclude_binaries=True,
     name='fabrica', debug=False, bootloader_ignore_signals=False,
-    strip=False, upx=True, console=True,  # 服务器程序需控制台输出
+    strip=False, upx=True, console=False,  # 桌面应用隐藏控制台，由 pywebview 窗口展示界面
     disable_windowed_traceback=False, argv_emulation=False,
     target_arch=None, codesign_identity=None, entitlements_file=None,
 )
@@ -829,6 +834,9 @@ nexus/Fabrica/
 │   │       ├── index.html          # 工具首页
 │   │       ├── css/
 │   │       └── js/
+│   │
+│   ├── desktop/                    # 桌面集成层（pywebview 窗口壳）
+│   │   └── __init__.py             # 桌面启动器（launch_window / launch_browser）
 │   │
 │   ├── tools/                      # 工具插件目录 📝 待创建
 │   │   ├── __init__.py
@@ -889,6 +897,7 @@ nexus/Fabrica/
 |------|------|------|
 | **语言** | Python ≥ 3.10 | 团队技术栈，生态丰富 |
 | **Web 框架** | FastAPI | 异步支持好，自动生成 OpenAPI 文档，轻量 |
+| **桌面窗口** | pywebview | 轻量原生窗口壳，复用 Web 前端，Windows 弹出独立窗口，Linux 回退浏览器 |
 | **前端** | 原生 HTML + CSS + JS | 零构建依赖，开发调试简单，未来可替换 |
 | **配置** | pydantic + yaml | 类型安全，配置校验 |
 | **存储** | SQLite | 单文件，零部署，桌面工具首选 |
@@ -1052,7 +1061,7 @@ class VideoFixtureFactory:
 
 | 里程碑 | 内容 |
 |--------|------|
-| M1 | 平台骨架搭建：FastAPI 服务 + 前端首页 + 工具注册机制 |
+| M1 | 平台骨架搭建：FastAPI 服务 + 前端首页 + 工具注册机制 + pywebview 桌面窗口 |
 | M2 | 视频验重工具核心逻辑：L1+L2 级联，FAISS 索引，小样本可跑通 |
 | M3 | 视频验重工具完整实现：L3 CLIP 深度特征，前端配置与结果展示 |
 | M4 | 测试与验证：Linux 开发环境全套测试，Windows 打包验证 |
@@ -1073,7 +1082,7 @@ class VideoFixtureFactory:
 | 暗色主题 / 多主题 | 前端主题切换 |
 | 任务通知 | 长时间任务完成后系统通知 |
 | 进度可视化 | 实时进度条、日志流式展示 |
-| Electron 壳 | 可选，提供更原生的桌面体验 |
+| Electron/Tauri 壳升级 | 可选，pywebview 桌面窗口已在第一阶段交付，未来可升级到 Electron/Tauri 获得更原生体验 |
 
 ---
 

@@ -19,6 +19,9 @@ DIST_DIR="$FABRICA_DIR/dist"
 BUILD_DIR="$FABRICA_DIR/build"
 DIST_APP_DIR="$DIST_DIR/fabrica"
 
+# 构建日志
+BUILD_LOG="$FABRICA_DIR/data/logs/build.log"
+
 # ============================================================================
 # 检查 pyinstaller 是否可用
 # 返回: 0 表示可用，1 表示不可用
@@ -72,9 +75,10 @@ do_build() {
     fi
 
     # 4. 执行打包
-    info "开始打包（onedir 模式）..."
+    init_dirs
+    info "开始打包（onedir 模式），日志: $BUILD_LOG ..."
     cd "$FABRICA_DIR"
-    pyinstaller build_win.spec --clean
+    pyinstaller build_win.spec --clean 2>&1 | tee "$BUILD_LOG"
 
     # 5. 校验产物
     if [ ! -f "$DIST_APP_DIR/fabrica.exe" ] && [ ! -f "$DIST_APP_DIR/fabrica" ]; then
@@ -82,6 +86,7 @@ do_build() {
         exit 1
     fi
     success "打包完成，产物位于: $DIST_APP_DIR"
+    echo "   构建日志: $BUILD_LOG"
 
     # 6. 可选归档
     if [ "$make_zip" -eq 1 ]; then
@@ -94,7 +99,8 @@ do_build() {
 # ============================================================================
 make_zip_archive() {
     local version
-    version=$(python3 -c "from fabrica import __version__; print(__version__)" 2>/dev/null \
+    local py="${PYTHON_CMD:-python3}"
+    version=$($py -c "from fabrica import __version__; print(__version__)" 2>/dev/null \
         || echo "0.1.0")
     local zip_name="fabrica-${version}.zip"
     local zip_path="$DIST_DIR/$zip_name"
@@ -105,7 +111,7 @@ make_zip_archive() {
         zip -r "$zip_name" "fabrica" >/dev/null
     else
         # 无 zip 命令时回退到 Python 打包
-        python3 -c "
+        $py -c "
 import shutil
 shutil.make_archive('${DIST_DIR}/fabrica-${version}', 'zip', '${DIST_DIR}', 'fabrica')
 "

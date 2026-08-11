@@ -501,6 +501,36 @@ Fabrica 第一阶段 MVP 实现周期为 10 周，分为 5 个阶段：
 
 ---
 
+### T3.6 桌面窗口集成（pywebview）
+
+**任务描述**：用 pywebview 将现有 Web 前端包装为原生桌面窗口，使 exe 打开后直接弹出独立窗口（无控制台），复用现有 FastAPI 服务与前端代码。详细设计见 [docs/core/desktop_integration.md](../core/desktop_integration.md)。
+
+**交付物**：
+- `fabrica/desktop/__init__.py` — 桌面启动器模块
+  - `launch_window(host, port, title, width, height, min_size, on_close)` — 创建 pywebview 窗口并阻塞主线程
+  - `launch_browser(host, port)` — dev_mode 浏览器回退模式
+  - `wait_for_server(host, port, timeout)` — 端口就绪探测（轮询 socket 连接）
+- `main.py` — 修改启动流程
+  - uvicorn 服务线程化（`threading.Thread(daemon=True)`）
+  - 端口就绪探测后调用 `launch_window()` 或 `launch_browser()`
+  - 窗口关闭回调触发 `server.should_exit = True`
+  - dev_mode 判断逻辑（Linux 自动回退浏览器）
+- `build_win.spec` — 修改打包配置
+  - `console=True` → `console=False`（隐藏控制台）
+  - `hiddenimports` 增加 `"pywebview"` 和 `"pywebview.platforms.winforms"`
+- `config/config.yaml` — 增加 `fabrica.desktop` 配置域
+  - `window_title` / `width` / `height` / `min_size` / `dev_mode`
+- `requirements.txt` — 增加 `pywebview>=4.0` 依赖
+
+**验收标准**：
+- Windows exe 打开后直接弹出 pywebview 桌面窗口（无控制台终端）
+- 窗口标题、尺寸符合 `fabrica.desktop` 配置
+- 窗口关闭后进程优雅退出（uvicorn 服务停止 + 资源池释放）
+- Linux 开发环境 `dev_mode` 自动回退浏览器模式，`python main.py` 正常启动
+- 窗口内可正常访问工具首页、提交任务、查看实时进度（复用现有前端）
+
+---
+
 ## 阶段四：视频验重工具 — L1 + L2（第7-8周）
 
 **目标**：实现视频验重工具的前两级（L1 文件哈希 + L2 pHash 序列），包括抽帧模块、FAISS 二进制索引和序列对齐打分，并注册为 Fabrica 平台工具。
@@ -827,6 +857,61 @@ Fabrica 第一阶段 MVP 实现周期为 10 周，分为 5 个阶段：
 
 ---
 
+## 阶段六：桌面交互功能增强（第11周）
+
+> 详细设计见 [docs/core/desktop_features.md](../core/desktop_features.md)
+
+### T6.1 目录选择器（pywebview 原生对话框）
+
+**任务描述**：用 pywebview 原生文件对话框替代浏览器 `<input type="file">`，使用户能通过点击选择目录并获取完整路径。
+
+**交付物**：
+- `fabrica/desktop/__init__.py` — DesktopAPI 类增加 `open_directory_dialog()` 和 `open_file_dialog()` 方法
+- `fabrica/server/static/js/components/tool-form.js` — 浏览按钮逻辑改造（pywebview API 优先 + 浏览器回退手动输入）
+- 移除隐藏的 `<input type="file">` 和路径截断逻辑
+
+**验收标准**：
+- Windows 桌面环境下，video_dedup 工具页"输入目录"点击"浏览"弹出原生目录选择对话框
+- 选择目录后文本框填入完整路径（如 `D:\videos`），不截断
+- Linux 开发环境（dev_mode）"浏览"按钮提示手动输入，不报错
+
+### T6.2 验重结果结构化展示 + 打开文件夹
+
+**任务描述**：将验重结果从 JSON 文本展示改为结构化重复组卡片，每个视频可点击"打开文件夹"按钮在系统文件管理器中定位。
+
+**交付物**：
+- `fabrica/tools/video_dedup/pipeline.py` — `final_groups` 结构改造（从 `List[List[str]]` 改为含视频元信息的 `List[Dict]`）
+- `fabrica/tools/video_dedup/storage.py` — 新增 `get_video()` 和 `get_match()` 查询方法
+- `fabrica/server/static/js/components/dedup-result.js` — 新建，专门渲染验重结果（重复组卡片+视频路径+打开文件夹按钮）
+- `fabrica/server/static/js/components/task-progress.js` — `onComplete` 检测工具类型，调用 `dedup-result.js`
+- `fabrica/desktop/__init__.py` — DesktopAPI 增加 `open_in_explorer(path)` 方法
+- `fabrica/server/static/css/style.css` — 重复组卡片样式
+
+**验收标准**：
+- 验重完成后结果区域展示重复组卡片（非 JSON 文本）
+- 每组列出视频路径、大小、时长、分辨率
+- 点击"打开文件夹"按钮，系统文件管理器打开并选中对应文件
+- 浏览器环境下"打开文件夹"按钮改为复制路径提示
+
+### T6.3 关键帧保存与展示
+
+**任务描述**：判重完成后对重复组视频保存关键帧图像，前端展示关键帧网格并高亮判定为相同的帧对。
+
+**交付物**：
+- `fabrica/tools/video_dedup/pipeline.py` — 新增 `_save_keyframes()` 方法（判重后对重复组视频重新抽帧保存 JPEG）和 `_compute_matched_frames()` 方法（利用已有 pHash 计算帧级匹配信息）
+- `fabrica/server/__init__.py` — 挂载 `/keyframes` 静态文件目录
+- `fabrica/server/static/js/components/dedup-result.js` — 扩展关键帧网格渲染（按视频列排列+高亮匹配帧+点击放大）
+- `fabrica/server/static/css/style.css` — 关键帧网格、高亮边框样式
+
+**验收标准**：
+- 重复组卡片下方展示关键帧网格，每个视频一列
+- 判定为相同的帧对有蓝色高亮边框
+- 点击缩略图可放大查看
+- `data/keyframes/` 目录下有对应视频的关键帧 JPEG 文件
+- 非重复组视频不保存关键帧（磁盘占用合理）
+
+---
+
 ## 关键路径
 
 ```
@@ -834,11 +919,13 @@ T1.1 → T1.2 → T1.3 → T1.4 → T1.5 → T1.6 → T1.7 → T1.8
                                                     ↓
       T2.1 → T2.2 → T2.3 → T2.4 → T2.5 → T2.6 → T2.7
                                                     ↓
-            T3.1 → T3.2 → T3.3 → T3.4 → T3.5
-                                          ↓
+            T3.1 → T3.2 → T3.3 → T3.4 → T3.5 → T3.6
+                                                  ↓
             T4.1 → T4.2 → T4.3 → T4.4 → T4.5 → T4.6 → T4.7 → T4.8
                                                                   ↓
                   T5.1 → T5.2 → T5.3 → T5.4 → T5.5 → T5.6 → T5.7
+                                                                ↓
+                        T6.1 → T6.2 → T6.3
 ```
 
 **并行可能性**：
@@ -871,6 +958,7 @@ T1.1 → T1.2 → T1.3 → T1.4 → T1.5 → T1.6 → T1.7 → T1.8
 | REST API 7 端点可用 | 所有端点返回正确 Pydantic 模型 |
 | WebSocket 实时推送 | 进度/日志/完成/错误事件推送 + 心跳 |
 | SPA 前端 5 页面 | Hash 路由 + 表单渲染 + 实时进度 |
+| 桌面窗口集成 | exe 弹出 pywebview 窗口（无控制台）+ 窗口关闭优雅退出 + Linux dev_mode 浏览器回退 |
 | Sampler 抽帧正确 | 自适应采样 + 精确 seek + 容错 |
 | L1 文件哈希 | MD5 计算 + 分块读取 + 哈希分组 |
 | L2 pHash 序列 | 64bit 指纹 + FAISS 二进制索引 + 序列对齐打分 |
@@ -878,6 +966,9 @@ T1.1 → T1.2 → T1.3 → T1.4 → T1.5 → T1.6 → T1.7 → T1.8
 | 并查集聚类 | 传递性合并 + 路径压缩 + 展开 L1 组 |
 | CascadePipeline 级联调度 | 5 级流程编排 + 容错 + 取消 + 进度报告 |
 | VideoStorage 存储层 | SQLite + .npy 特征文件 + 数据库迁移 |
+| 目录选择器 | pywebview 原生对话框获取完整路径 + 浏览器回退手动输入 |
+| 结果结构化展示 | 重复组卡片（视频路径+元信息）+ 打开文件夹按钮 + 工具类型路由 |
+| 关键帧展示 | 重复组关键帧网格 + 匹配帧高亮 + 点击放大 + 仅保存重复组帧 |
 
 ### 性能验收
 

@@ -351,6 +351,7 @@ class Router {
 | **服务层 → 平台核心** | ToolRegistry | `list_tools()`, `get_schema()`, `run_tool()`, `cancel_task()` | API 路由层调用注册中心 |
 | **服务层 → 基础设施** | Utils | 日志 | 请求日志记录 |
 | **服务层 → 前端** | 静态资源 | 文件系统 | 直接返回静态 HTML/CSS/JS 文件 |
+| **服务层 ← 桌面集成层** | fabrica.desktop | HTTP/WS (localhost) | pywebview 窗口通过 `http://127.0.0.1:{port}` 访问 FastAPI 服务（详见 [desktop_integration.md](./desktop_integration.md)） |
 
 ### 5.2 HTTP 请求全链路时序
 
@@ -476,7 +477,7 @@ async def get_tool_stats(name: str):
 | 迭代项 | 描述 | 优先级 |
 |-------|------|--------|
 | OpenAPI 文档 | 集成 FastAPI 自动生成的 Swagger UI | P1 |
-| 前端框架迁移 | 可选迁移到 React/Vue 或 Electron | P2 |
+| 前端框架迁移 | 桌面壳层已由 pywebview 实现（见 [desktop_integration.md](./desktop_integration.md)），未来可选升级到 Electron/Tauri 或迁移前端到 React/Vue | P2 |
 | 多语言支持 | 前端 i18n 国际化 | P3 |
 | 响应式布局 | 适配移动端和平板 | P4 |
 

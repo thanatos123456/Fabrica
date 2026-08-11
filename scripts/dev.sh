@@ -14,9 +14,11 @@ source "$SCRIPT_DIR/common.sh"
 # 环境初始化
 # ============================================================================
 setup_env() {
+    check_python || return 1
+
     info "创建虚拟环境..."
     cd "$FABRICA_DIR"
-    python3 -m venv .venv
+    $PYTHON_CMD -m venv .venv
 
     info "安装依赖..."
     .venv/bin/pip install --upgrade pip
@@ -31,18 +33,20 @@ setup_env() {
 # 运行测试
 # ============================================================================
 run_tests() {
+    check_python || return 1
     info "运行测试..."
     cd "$FABRICA_DIR"
-    python3 -m pytest tests/ -v "$@"
+    $PYTHON_CMD -m pytest tests/ -v "$@"
 }
 
 # ============================================================================
 # 前台启动开发服务器
 # ============================================================================
 serve_dev() {
+    check_python || return 1
     info "启动开发服务器（前台模式）..."
     cd "$FABRICA_DIR"
-    python3 "$MAIN_SCRIPT" "$@"
+    $PYTHON_CMD "$MAIN_SCRIPT" "$@"
 }
 
 # ============================================================================

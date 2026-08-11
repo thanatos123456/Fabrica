@@ -15,6 +15,7 @@ source "$SCRIPT_DIR/common.sh"
 # ============================================================================
 start_service() {
     init_dirs
+    check_python || return 1
 
     local pid
     pid=$(get_pid)
@@ -31,7 +32,7 @@ start_service() {
 
     # 后台启动
     cd "$FABRICA_DIR"
-    nohup python3 "$MAIN_SCRIPT" >> "$LOG_FILE" 2>&1 &
+    nohup $PYTHON_CMD "$MAIN_SCRIPT" >> "$LOG_FILE" 2>&1 &
     local new_pid=$!
 
     # 等待服务启动
@@ -63,7 +64,7 @@ stop_service() {
         warn "未找到 PID 文件，服务可能未在运行"
         # 尝试清理残留进程
         local pids
-        pids=$(pgrep -f "python3.*main.py" 2>/dev/null || true)
+        pids=$(pgrep -f "python.*main.py" 2>/dev/null || true)
         if [ -n "$pids" ]; then
             info "发现残留进程，正在清理..."
             echo "$pids" | xargs kill 2>/dev/null || true

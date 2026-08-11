@@ -109,20 +109,28 @@ wait_for_stop() {
 # 检查 Python3 是否可用且版本 >= 3.8
 # 返回: 0 表示通过，1 表示失败
 check_python() {
-    # 检查 python3 命令是否存在
-    if ! command -v python3 >/dev/null 2>&1; then
-        error "未找到 python3 命令，请安装 Python 3.8+"
+    local PYTHON_CMD
+
+    # 优先使用 python3，否则回退到 python
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_CMD="python3"
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_CMD="python"
+    else
+        error "未找到 python3/python 命令，请安装 Python 3.8+"
         return 1
     fi
 
     # 检查版本 >= 3.8
-    if ! python3 -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
+    if ! $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 8) else 1)" 2>/dev/null; then
         local py_version
-        py_version=$(python3 --version 2>&1)
+        py_version=$($PYTHON_CMD --version 2>&1)
         error "Python 版本过低: ${py_version}，需要 3.8+"
         return 1
     fi
 
+    # 将 PYTHON_CMD 导出供其他函数使用
+    export PYTHON_CMD
     return 0
 }
 
@@ -130,7 +138,8 @@ check_python() {
 # 返回: 0 表示通过，1 表示失败
 check_deps() {
     # 检查 Fabrica 运行所需的关键依赖
-    if ! python3 -c "import fastapi, uvicorn" 2>/dev/null; then
+    local py="${PYTHON_CMD:-python3}"
+    if ! $py -c "import fastapi, uvicorn" 2>/dev/null; then
         error "缺少关键依赖（fastapi/uvicorn）"
         echo "   请运行: bash scripts/dev.sh setup"
         return 1
