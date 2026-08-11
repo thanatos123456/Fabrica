@@ -51,6 +51,38 @@ def hamming(a: Union[int, np.uint64], b: Union[int, np.uint64]) -> int:
 # 序列相似度
 # ============================================================================
 
+def _monotonic_hits(
+    dists: np.ndarray,
+    frame_thresh: int,
+) -> int:
+    """贪心双指针顺序匹配，统计在时间上单调对齐的命中帧数。
+
+    对 short 序列的每一帧，在 long 序列中从当前指针位置向后找
+    第一个汉明距离不超过 frame_thresh 的帧；找到则命中并让指针
+    单调前进，找不到则指针保持不变（允许跳过该帧）。这样强制
+    命中帧在 long 序列中按时间顺序递增，可拒绝不同视频偶然产生的
+    乱序 pHash 命中。
+
+    Args:
+        dists: 汉明距离矩阵，shape [len(short), len(long)]。
+        frame_thresh: 帧汉明距离命中阈值。
+
+    Returns:
+        在时间顺序上单调对齐的命中帧数。
+    """
+    n_short, n_long = dists.shape
+    long_ptr = 0
+    hits = 0
+    for i in range(n_short):
+        # 从当前指针向后找第一个可命中的帧（单调前进）
+        for j in range(long_ptr, n_long):
+            if int(dists[i, j]) <= frame_thresh:
+                hits += 1
+                long_ptr = j + 1
+                break
+    return hits
+
+
 def sequence_score(
     seq_a: Sequence,
     seq_b: Sequence,
@@ -58,13 +90,15 @@ def sequence_score(
 ) -> float:
     """计算两条 pHash 序列的相似度（0~1）。
 
-    以短序列为基准，短序列每帧在长序列中找汉明距离最小的帧；
-    最小距离 <= frame_thresh 记为命中。命中比例 = 命中帧数 / 短序列长度。
+    以短序列为基准，短序列每帧在长序列中按时间顺序（单调递增）
+    寻找汉明距离不超过 frame_thresh 的帧；命中比例 = 命中帧数 /
+    短序列长度。时序对齐约束使真重复（时间结构一致）得分高，
+    而不同视频的偶然乱序 pHash 命中得分显著降低。
 
     Args:
         seq_a: 序列 A（np.ndarray uint64 或 python 序列）。
         seq_b: 序列 B。
-        frame_thresh: 帧汉明距离命中阈值，默认 8。
+        frame_thresh: 帧汉明距离命中阈值，默认 16。
 
     Returns:
         0~1 的相似度。任一序列为空时返回 0.0。
@@ -82,7 +116,5 @@ def sequence_score(
 
     # 全量汉明距离矩阵 [len(short), len(long)]
     dists = np.bitwise_count(short[:, None] ^ long[None, :])
-    # 每帧取最小距离，命中判定
-    mins = dists.min(axis=1)
-    hits = int((mins <= frame_thresh).sum())
+    hits = _monotonic_hits(dists, frame_thresh)
     return hits / short.size

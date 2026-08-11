@@ -82,7 +82,7 @@ class TestSampleFrames(unittest.TestCase):
     def test_resize_parameter_takes_effect(self):
         """resize 参数应控制输出帧尺寸。"""
         path = self._make_video(duration=2.0)
-        frames, _ = sample_frames(path, resize=64, min_frames=4)
+        frames, _ = sample_frames(path, resize=(64, 64), min_frames=4)
         self.assertEqual(frames[0].image.size, (64, 64))
 
     def test_corrupt_file_returns_empty(self):

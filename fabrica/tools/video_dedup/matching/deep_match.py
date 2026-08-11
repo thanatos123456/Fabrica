@@ -31,6 +31,37 @@ LEVEL3_THRESHOLD = 0.85     # >= 0.85 判重（Level 3 最终裁决）
 # 深度特征序列相似度
 # ============================================================================
 
+def _monotonic_hits(
+    sim: np.ndarray,
+    sim_thresh: float,
+) -> int:
+    """贪心双指针顺序匹配，统计在时间上单调对齐的命中帧数。
+
+    对 short 序列的每一帧，在 long 序列中从当前指针位置向后找
+    第一个余弦相似度不低于 sim_thresh 的帧；找到则命中并让指针
+    单调前进，找不到则指针保持不变（允许跳过该帧）。时序对齐
+    约束可拒绝不同视频偶然产生的乱序高相似命中。
+
+    Args:
+        sim: 余弦相似度矩阵，shape [len(short), len(long)]。
+        sim_thresh: 单帧余弦相似度命中阈值。
+
+    Returns:
+        在时间顺序上单调对齐的命中帧数。
+    """
+    n_short, n_long = sim.shape
+    long_ptr = 0
+    hits = 0
+    for i in range(n_short):
+        # 从当前指针向后找第一个可命中的帧（单调前进）
+        for j in range(long_ptr, n_long):
+            if float(sim[i, j]) >= sim_thresh:
+                hits += 1
+                long_ptr = j + 1
+                break
+    return hits
+
+
 def deep_sequence_score(
     feat_a: Sequence,
     feat_b: Sequence,
@@ -38,8 +69,10 @@ def deep_sequence_score(
 ) -> float:
     """计算两条深度特征序列的相似度（0~1）。
 
-    以短序列为基准，短序列每帧在长序列中找余弦相似度最高的帧；
-    最大余弦相似度 >= sim_thresh 记为命中。命中比例 = 命中帧数 / 短序列长度。
+    以短序列为基准，短序列每帧在长序列中按时间顺序（单调递增）
+    寻找余弦相似度不低于 sim_thresh 的帧；命中比例 = 命中帧数 /
+    短序列长度。时序对齐约束使真重复（时间结构一致）得分高，
+    而不同视频的偶然乱序高相似命中得分显著降低。
 
     Args:
         feat_a: 特征序列 A（[n, dim] 已 L2 归一化的数组或列表）。
@@ -68,7 +101,5 @@ def deep_sequence_score(
 
     # 全量余弦相似度矩阵 [len(short), len(long)]
     sim = short @ long_.T
-    # 每帧取最大相似度，命中判定
-    best = sim.max(axis=1)
-    hits = int((best >= sim_thresh).sum())
+    hits = _monotonic_hits(sim, sim_thresh)
     return hits / short.shape[0]

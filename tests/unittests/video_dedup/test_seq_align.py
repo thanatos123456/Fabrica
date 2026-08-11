@@ -82,6 +82,20 @@ class TestSequenceScore(unittest.TestCase):
         loose = sequence_score(x, y, frame_thresh=32)
         self.assertGreaterEqual(loose, strict)
 
+    def test_temporal_alignment(self):
+        """时序对齐：乱序命中应显著降低得分。"""
+        a1 = np.uint64(0x1111111111111111)
+        a2 = np.uint64(0x2222222222222222)
+        a3 = np.uint64(0x3333333333333333)
+        short = np.array([a1, a2, a3], dtype=np.uint64)
+        # 同序完全一致子序列 -> 1.0
+        self.assertEqual(sequence_score(short, short, frame_thresh=0), 1.0)
+        # 倒序：独立命中为 1.0，时序对齐下仅首帧可顺序命中 -> 显著降低
+        long_rev = short[::-1]
+        self.assertLess(
+            sequence_score(short, long_rev, frame_thresh=0), 0.5
+        )
+
 
 # ============================================================================
 # 判定阈值常量测试

@@ -35,17 +35,6 @@ def _feats(rows):
     return _normalize(feats)
 
 
-def _brute(a, b, sim_thresh):
-    """逐帧暴力内积比对（参考实现）。"""
-    short, long_ = (a, b) if a.shape[0] <= b.shape[0] else (b, a)
-    hits = 0
-    for i in range(short.shape[0]):
-        best = max(float(short[i] @ long_[j]) for j in range(long_.shape[0]))
-        if best >= sim_thresh:
-            hits += 1
-    return hits / short.shape[0]
-
-
 # ============================================================================
 # 测试
 # ============================================================================
@@ -118,21 +107,27 @@ class TestDeepSequenceScore(unittest.TestCase):
         e2 = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         a = np.stack([e1, e1, e2, e2])
         b = np.stack([e1, e2, e2, e2])
-        # 阈值 0.0：全都命中 -> 1.0
+        # 阈值 0.0：所有帧（含 0 余弦）都命中 -> 1.0
         self.assertEqual(deep_sequence_score(a, b, sim_thresh=0.0), 1.0)
-        # 阈值 0.5：全命中（1 或 0 余弦）-> 1.0
-        self.assertEqual(deep_sequence_score(a, b, sim_thresh=0.5), 1.0)
+        # 帧顺序一致时，在 0.5 阈值下每帧都能顺序命中 -> 1.0
+        b_same = np.stack([e1, e1, e2, e2])
+        self.assertEqual(
+            deep_sequence_score(a, b_same, sim_thresh=0.5), 1.0
+        )
 
-    def test_matches_brute_force(self):
-        """矩阵内积结果应与逐帧暴力比对一致。"""
-        rng = np.random.default_rng(1)
-        a_raw = _normalize(rng.standard_normal((5, 16)))
-        b_raw = _normalize(rng.standard_normal((7, 16)))
-        for thresh in (0.0, 0.3, 0.6, 0.9):
-            self.assertEqual(
-                deep_sequence_score(a_raw, b_raw, sim_thresh=thresh),
-                _brute(a_raw, b_raw, sim_thresh=thresh),
-            )
+    def test_temporal_alignment(self):
+        """时序对齐：乱序命中应显著降低得分。"""
+        e1 = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        e2 = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        e3 = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        a = np.stack([e1, e1, e2, e2])
+        # B 帧顺序颠倒：独立命中可得高分，时序对齐应显著降低
+        b_rev = np.stack([e2, e2, e1, e1])
+        self.assertLess(deep_sequence_score(a, b_rev, sim_thresh=0.5), 0.7)
+        # 三帧循环错位：顺序被破坏，得分应明显偏低
+        a3 = np.stack([e1, e2, e3])
+        b3_shift = np.stack([e2, e3, e1])
+        self.assertLess(deep_sequence_score(a3, b3_shift, sim_thresh=0.5), 0.7)
 
     def test_l3_threshold_constant(self):
         """LEVEL3_THRESHOLD 应为 0.85。"""

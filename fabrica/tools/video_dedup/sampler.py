@@ -25,12 +25,13 @@ import av
 # 常量
 # ============================================================================
 
-MIN_FRAMES = 8              # 最少采样帧数
-MAX_FRAMES = 100            # 最多采样帧数
-TARGET_FPS = 1.0            # 长视频目标采样帧率（帧/秒）
+MIN_FRAMES = 16             # 最少采样帧数
+MAX_FRAMES = 1000           # 最多采样帧数（保护上限，配合帧间隔动态采样）
+TARGET_FPS = 1.0            # 长视频目标采样帧率（帧/秒，未指定 frame_interval 时）
+FRAME_INTERVAL = 5.0        # 长视频采样帧间隔（秒/帧，与时长挂钩）
 EDGE_MARGIN = 0.5           # 避开首尾的时间（秒）
 SHORT_VIDEO_SECONDS = 16    # 短视频判定阈值（秒）
-DEFAULT_RESIZE = 224        # resize 目标边长（像素）
+DEFAULT_RESIZE = (224, 224)  # resize 目标尺寸（宽, 高）
 
 
 # ============================================================================
@@ -61,18 +62,22 @@ def compute_sample_timestamps(
     min_frames: int = MIN_FRAMES,
     max_frames: int = MAX_FRAMES,
     target_fps: float = TARGET_FPS,
+    frame_interval: Optional[float] = None,
 ) -> List[float]:
     """计算视频采样时间点（秒）。
 
     时间点均匀分布在 [0.5, duration-0.5] 区间内，避开首尾。
-    短视频（< 16s）采样 min_frames 帧；长视频按 target_fps
-    均匀采样，结果夹在 [min_frames, max_frames] 之间。
+    短视频（< 16s）采样 min_frames 帧；长视频按帧间隔采样：
+    指定 frame_interval 时每 N 秒采一帧（与时长挂钩，长视频自动
+    增加帧数），否则按 target_fps 采样，结果夹在
+    [min_frames, max_frames] 之间。
 
     Args:
         duration: 视频时长（秒）。
         min_frames: 最少采样帧数。
         max_frames: 最多采样帧数。
-        target_fps: 长视频目标采样帧率。
+        target_fps: 长视频目标采样帧率（未指定 frame_interval 时）。
+        frame_interval: 长视频采样帧间隔（秒/帧），None 时回退 target_fps。
 
     Returns:
         float 秒组成的采样时间点列表。时长过短无法避开首尾时返回空列表。
@@ -88,9 +93,12 @@ def compute_sample_timestamps(
     # 计算目标帧数
     if duration < SHORT_VIDEO_SECONDS:
         n = min_frames
+    elif frame_interval and frame_interval > 0:
+        # 帧间隔采样：与时长挂钩，长视频自动增加采样帧数
+        n = int(duration / frame_interval)
     else:
-        n = min(max_frames, int(target_fps * duration))
-        n = max(n, min_frames)
+        n = int(target_fps * duration)
+    n = max(min_frames, min(n, max_frames))
 
     # 均匀分布（居中采样，避免撞端点）
     return [
@@ -107,7 +115,7 @@ def _decode_frame(
     container: av.container.InputContainer,
     stream,
     target_ts: float,
-    resize: int,
+    resize: Tuple[int, int],
 ) -> Optional[av.VideoFrame]:
     """在指定时间点精确 seek 并解码一帧。
 
@@ -115,7 +123,7 @@ def _decode_frame(
         container: 已打开的 PyAV 输入容器。
         stream: 视频流。
         target_ts: 目标时间点（秒）。
-        resize: 目标边长（像素）。
+        resize: 目标尺寸 (宽, 高)。
 
     Returns:
         解码并 resize 后的 PIL 图像；无法解码时返回 None。
@@ -130,7 +138,7 @@ def _decode_frame(
     )
     for frame in container.decode(stream):
         image = frame.to_image().convert("RGB")
-        image = image.resize((resize, resize), Image.BILINEAR)
+        image = image.resize(resize, Image.BILINEAR)
         return image
     return None
 
@@ -161,22 +169,25 @@ def _resolve_duration(
 
 def sample_frames(
     path: str,
-    resize: int = DEFAULT_RESIZE,
+    resize: Tuple[int, int] = DEFAULT_RESIZE,
     min_frames: int = MIN_FRAMES,
     max_frames: int = MAX_FRAMES,
     target_fps: float = TARGET_FPS,
+    frame_interval: Optional[float] = None,
 ) -> Tuple[List[SampledFrame], float]:
     """从视频文件采样关键帧。
 
     使用 PyAV 精确 seek，只解码需要的帧。短视频密集采样，
-    长视频稀疏采样，统一 resize 到 (resize, resize)。
+    长视频按帧间隔（frame_interval，每 N 秒一帧）或 target_fps
+    稀疏采样，统一 resize 到目标尺寸。
 
     Args:
         path: 视频文件路径。
-        resize: 目标边长（像素），默认 224。
+        resize: 目标尺寸 (宽, 高)，默认 (224, 224)。
         min_frames: 最少采样帧数。
         max_frames: 最多采样帧数。
-        target_fps: 长视频目标采样帧率。
+        target_fps: 长视频目标采样帧率（未指定 frame_interval 时）。
+        frame_interval: 长视频采样帧间隔（秒/帧），None 时回退 target_fps。
 
     Returns:
         (frames, duration) 元组。frames 为 SampledFrame 列表；
@@ -198,6 +209,7 @@ def sample_frames(
                 min_frames=min_frames,
                 max_frames=max_frames,
                 target_fps=target_fps,
+                frame_interval=frame_interval,
             )
 
             frames: List[SampledFrame] = []
