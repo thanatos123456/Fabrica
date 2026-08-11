@@ -35,10 +35,10 @@ class TestTaskContext(unittest.TestCase):
         """report_progress 应触发进度回调。"""
         received = []
         ctx = self._make_ctx(
-            _progress_callback=lambda p, m: received.append((p, m))
+            _progress_callback=lambda p, m, s="": received.append((p, m, s))
         )
-        ctx.report_progress(50, "处理中")
-        self.assertEqual(received, [(50, "处理中")])
+        ctx.report_progress(50, "处理中", "测试阶段")
+        self.assertEqual(received, [(50, "处理中", "测试阶段")])
 
     def test_report_progress_without_callback(self):
         """未设置进度回调时 report_progress 不应抛异常。"""

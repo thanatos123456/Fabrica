@@ -42,12 +42,12 @@ class TestResourcePool(unittest.IsolatedAsyncioTestCase):
         raise AssertionError(f"任务 {task_id} 未在 {timeout}s 内结束")
 
     async def test_init_pool_default_config(self):
-        """init_pool 默认配置应为线程池 max_size=2 task_timeout=3600。"""
+        """init_pool 默认配置应为线程池 max_size=2 task_timeout=None。"""
         self.registry.init_pool()
         pool = self.registry.get_pool()
         self.assertEqual(pool._config.pool_type, "thread")
         self.assertEqual(pool._config.max_size, 2)
-        self.assertEqual(pool._config.task_timeout, 3600)
+        self.assertIsNone(pool._config.task_timeout)
 
     async def test_init_pool_custom_config(self):
         """init_pool 自定义配置应生效。"""

@@ -141,13 +141,13 @@ class TestToolRegistrySync(unittest.TestCase):
             self.registry.run_tool("nope", {})
 
     def test_progress_callback_fire(self):
-        """进度回调应触发并解包 (percent, message)。"""
+        """进度回调应触发并解包 (percent, message, stage)。"""
         received = []
         self.registry.register_progress_callback(
-            "t1", lambda p, m: received.append((p, m))
+            "t1", lambda p, m, s="": received.append((p, m, s))
         )
-        self.registry._fire_callback("t1", "progress", (50, "处理中"))
-        self.assertEqual(received, [(50, "处理中")])
+        self.registry._fire_callback("t1", "progress", (50, "处理中", "测试阶段"))
+        self.assertEqual(received, [(50, "处理中", "测试阶段")])
 
     def test_log_callback_fire(self):
         """日志回调应触发并解包 (level, message)。"""

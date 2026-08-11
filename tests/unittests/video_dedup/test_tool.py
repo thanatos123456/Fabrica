@@ -11,10 +11,6 @@ from unittest.mock import MagicMock, patch
 from tests.unittests.tool.fixtures import fresh_registry, reset_registry
 
 from fabrica.tools.video_dedup import VideoDedupTool
-from fabrica.utils.exceptions import (
-    ParamInvalidError,
-    ParamMissingError,
-)
 
 
 class TestVideoDedupTool(unittest.TestCase):
@@ -49,34 +45,36 @@ class TestVideoDedupTool(unittest.TestCase):
     # ---- validate ----
 
     def test_validate_missing_input_dir_raises(self):
-        """缺少 input_dir 应抛 ParamMissingError。"""
+        """缺少 input_dir 应返回包含 input_dir 的错误列表。"""
         tool = VideoDedupTool()
-        with self.assertRaises(ParamMissingError):
-            asyncio.run(tool.validate({}))
+        errors = asyncio.run(tool.validate({}))
+        self.assertTrue(errors)
+        self.assertTrue(any("input_dir" in e for e in errors))
 
     def test_validate_invalid_device_raises(self):
-        """device 不在允许范围应抛 ParamInvalidError。"""
+        """device 不在允许范围应返回 device 错误。"""
         tool = VideoDedupTool()
         params = {"input_dir": "/tmp", "device": "gpu"}
-        with self.assertRaises(ParamInvalidError):
-            asyncio.run(tool.validate(params))
+        errors = asyncio.run(tool.validate(params))
+        self.assertTrue(any("device" in e for e in errors))
 
     def test_validate_threshold_out_of_range_raises(self):
-        """threshold 越界应抛 ParamInvalidError。"""
+        """threshold 越界应返回非空错误列表。"""
         tool = VideoDedupTool()
         params = {"input_dir": "/tmp", "threshold": 5.0}
-        with self.assertRaises(ParamInvalidError):
-            asyncio.run(tool.validate(params))
+        errors = asyncio.run(tool.validate(params))
+        self.assertTrue(errors)
 
     def test_validate_valid_params_passes(self):
-        """合法参数应通过校验而不抛异常。"""
+        """合法参数应返回空列表。"""
         tool = VideoDedupTool()
         params = {
             "input_dir": "/tmp",
             "device": "cpu",
             "threshold": 0.5,
         }
-        asyncio.run(tool.validate(params))
+        errors = asyncio.run(tool.validate(params))
+        self.assertEqual(errors, [])
 
     # ---- run ----
 

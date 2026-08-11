@@ -186,12 +186,13 @@ async def ws_task(websocket: WebSocket, task_id: str) -> None:
     def _enqueue(event: Dict[str, Any]) -> None:
         queue.put_nowait(event)
 
-    def on_progress(percent: int, message: str) -> None:
+    def on_progress(percent: int, message: str, stage: str = "") -> None:
         _enqueue({
             "type": "progress",
             "task_id": task_id,
             "percent": percent,
             "message": message,
+            "stage": stage,
         })
 
     def on_log(level: str, message: str) -> None:

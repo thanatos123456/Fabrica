@@ -412,18 +412,19 @@ class TaskContext:
         """
         self._cancel_event.set()
 
-    def report_progress(self, percent: int, message: str = "") -> None:
+    def report_progress(self, percent: int, message: str = "", stage: str = "") -> None:
         """报告执行进度。
 
         调用进度回调（若已设置），将进度和消息上报给
         ToolRegistry 或上层调用方。
 
         Args:
-            percent: 进度百分比（0-100）。
+            percent: 进度百分比（0-100，当前阶段内）。
             message: 进度消息描述。
+            stage: 当前阶段名称。
         """
         if self._progress_callback is not None:
-            self._progress_callback(percent, message)
+            self._progress_callback(percent, message, stage)
 
     def log(self, level: str, message: str) -> None:
         """记录执行日志。
@@ -985,7 +986,7 @@ class ToolRegistry:
             config = PoolConfig(
                 pool_type="thread",
                 max_size=2,
-                task_timeout=3600,
+                task_timeout=None,
             )
         self._pool = ResourcePool(logger, config)
         logger.info(
@@ -1057,11 +1058,11 @@ class ToolRegistry:
 
         持久化进度到任务状态机，并广播给外部回调（如 WebSocket）。
         """
-        def _cb(percent: int, message: str) -> None:
+        def _cb(percent: int, message: str, stage: str = "") -> None:
             sm = self._tasks.get(task_id)
             if sm is not None:
                 sm.update_progress(percent)
-            self._fire_callback(task_id, "progress", (percent, message))
+            self._fire_callback(task_id, "progress", (percent, message, stage))
         return _cb
 
     def _make_log_cb(self, task_id: str) -> Callable:
@@ -1134,14 +1135,17 @@ class ToolRegistry:
                     self._run_sync_in_thread, tool, params, ctx
                 )
                 timeout = pool._config.task_timeout
-                try:
-                    result = await asyncio.wait_for(
-                        asyncio.wrap_future(future), timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    raise TaskTimeoutError(
-                        f"工具 '{name}' 执行超时（{timeout}s）"
-                    )
+                if timeout is None:
+                    result = await asyncio.wrap_future(future)
+                else:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.wrap_future(future), timeout=timeout
+                        )
+                    except asyncio.TimeoutError:
+                        raise TaskTimeoutError(
+                            f"工具 '{name}' 执行超时（{timeout}s）"
+                        )
             else:
                 # IO 密集型任务直接 await 执行
                 result = await tool.run(params, ctx)

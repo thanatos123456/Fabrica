@@ -9,6 +9,14 @@ fabrica:
     cors_origins: ["*"]         # CORS 允许的源
     static_dir: "server/static" # 前端静态资源目录
 
+  # 桌面窗口配置
+  desktop:
+    window_title: "Fabrica 工具集平台"   # 窗口标题
+    width: 1280                          # 窗口初始宽度（像素）
+    height: 800                          # 窗口初始高度（像素）
+    min_size: [1024, 600]                # 窗口最小尺寸 [width, height]
+    dev_mode: false                      # true=浏览器回退模式，false=桌面窗口模式
+
   # 日志配置
   logging:
     level: "INFO"               # 日志级别：DEBUG / INFO / WARNING / ERROR
@@ -26,3 +34,33 @@ fabrica:
   tools:
     dirs: ["fabrica/tools"]     # 工具扫描目录列表
     auto_discover: true         # 是否自动扫描发现工具
+
+# 工具级配置
+tools:
+  video_dedup:
+    # 抽帧采样参数
+    sample:
+      min_frames: 16            # 最短采样帧数
+      max_frames: 1000          # 最长采样帧数（保护上限）
+      target_fps: 1.0           # 目标采样帧率（未配置帧间隔时使用）
+      frame_interval: 5.0       # 长视频采样帧间隔（秒/帧，与时长挂钩）
+      resize: [224, 224]        # 抽帧缩放尺寸
+    device: "auto"              # 计算设备：auto / cpu / cuda
+    # L2 pHash 序列匹配
+    l2:
+      frame_thresh: 16          # 帧级 pHash 汉明距离阈值
+      confirm: 0.90             # L2 判定为重复的序列相似度阈值
+      suspect: 0.50             # L2 疑似对序列相似度阈值
+      search_k: 32              # FAISS 检索近邻数
+      hit_threshold: 3          # 疑似对命中帧数下限
+    # L3 CLIP 深度特征
+    l3:
+      model_name: "ViT-B-32"    # CLIP 骨干模型
+      pretrained: "laion2b_s34b_b79k"  # 预训练权重
+      batch_size: 64            # 特征提取批大小
+      sim_thresh: 0.92          # 帧级余弦相似度阈值
+      confirm: 0.85             # L3 判定为重复的序列相似度阈值
+      search_k: 32              # FAISS 浮点索引检索近邻数
+      hit_threshold: 1          # 深度候选对命中帧数下限
+    storage:
+      db_path: "data/video_dedup/dedup.db"  # 验重结果数据库路径

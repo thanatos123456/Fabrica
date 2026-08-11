@@ -8,15 +8,60 @@ L1 文件哈希 + L2 pHash 序列的算法逻辑在 T4.2-T4.7 实现。
 from typing import Any, Dict, List
 
 from fabrica.tool import ParamDef, ToolBase, tool, validate_param
-from fabrica.utils.exceptions import (
-    ParamInvalidError,
-    ParamMissingError,
-)
+from fabrica.utils.config import get_config
 from fabrica.utils.logger import get_logger
 from fabrica.tools.video_dedup.pipeline import CascadePipeline
 
 
 logger = get_logger("fabrica.tools.video_dedup")
+
+
+def _merge_config(params: Dict[str, Any]) -> Dict[str, Any]:
+    """合并 config.yaml 默认值与前端参数，前端参数优先。
+
+    从 config.yaml 的 tools.video_dedup 配置节读取默认值，
+    再以用户传入的 params 覆盖，组装成级联验重配置 cfg。
+
+    Args:
+        params: 用户传入的参数字典。
+
+    Returns:
+        合并后的级联验重配置字典。
+    """
+    sample = get_config("tools.video_dedup.sample", {}) or {}
+    l2_cfg = get_config("tools.video_dedup.l2", {}) or {}
+    l3_cfg = get_config("tools.video_dedup.l3", {}) or {}
+    storage_cfg = get_config("tools.video_dedup.storage", {}) or {}
+
+    cfg = {
+        "input_dir": params.get("input_dir"),
+        "output": params.get("output"),
+        "recursive": params.get("recursive", False),
+        # 计算设备：前端参数优先，回退到配置默认
+        "device": params.get("device", get_config("tools.video_dedup.device", "auto")),
+        # L2 阈值
+        "l2_threshold": params.get("threshold", l2_cfg.get("confirm", 0.90)),
+        "frame_thresh": l2_cfg.get("frame_thresh", 16),
+        "suspect_threshold": l2_cfg.get("suspect", 0.50),
+        "hit_threshold": l2_cfg.get("hit_threshold", 3),
+        "k": l2_cfg.get("search_k", 32),
+        # L3 阈值
+        "l3_sim_thresh": l3_cfg.get("sim_thresh", 0.92),
+        "l3_confirm": l3_cfg.get("confirm", 0.85),
+        "l3_search_k": l3_cfg.get("search_k", 32),
+        "l3_hit_threshold": l3_cfg.get("hit_threshold", 1),
+        # 抽帧采样参数
+        "sample_min_frames": sample.get("min_frames", 16),
+        "sample_max_frames": sample.get("max_frames", 100),
+        "sample_target_fps": sample.get("target_fps", 1.0),
+        "sample_frame_interval": sample.get("frame_interval", 5.0),
+        "sample_resize": tuple(sample.get("resize", [224, 224])),
+        # 存储路径：内部测试钩子 db_path 优先，其次配置默认
+        "db_path": params.get("db_path")
+        or storage_cfg.get("db_path")
+        or get_config("fabrica.storage.db_path"),
+    }
+    return cfg
 
 
 @tool.register
@@ -33,8 +78,8 @@ class VideoDedupTool(ToolBase):
     name = "video_dedup"
     title = "视频重复检测"
     description = (
-        "对视频目录执行两级验重（L1 文件哈希 + L2 pHash 序列），"
-        "识别完全重复与内容相似的视频。"
+        "对视频目录执行三级验重（L1 文件哈希 + L2 pHash 序列 + L3 CLIP 深度特征），"
+        "识别完全重复、内容相似与语义级重复（含水印/裁剪/字幕变体）的视频。"
     )
     icon = "🎞️"
     version = "1.0.0"
@@ -91,7 +136,7 @@ class VideoDedupTool(ToolBase):
 
     async def validate(
         self, params: Dict[str, Any],
-    ) -> None:
+    ) -> List[str]:
         """参数校验。
 
         校验 input_dir 必填，并对各参数套用 validate_param 规则。
@@ -99,14 +144,13 @@ class VideoDedupTool(ToolBase):
         Args:
             params: 用户传入的参数字典。
 
-        Raises:
-            ParamMissingError: input_dir 缺失时。
-            ParamInvalidError: 参数值不合法时。
+        Returns:
+            List[str]: 错误消息列表，为空表示校验通过。
         """
         # 必填参数检查
         input_dir = params.get("input_dir")
         if input_dir is None or str(input_dir).strip() == "":
-            raise ParamMissingError("缺少必填参数 input_dir")
+            return ["缺少必填参数 input_dir"]
 
         # 逐参数套用通用校验规则
         errors: List[str] = []
@@ -128,8 +172,7 @@ class VideoDedupTool(ToolBase):
                     f"device 取值 {device} 不在允许范围 {device_opt}"
                 )
 
-        if errors:
-            raise ParamInvalidError("; ".join(errors))
+        return errors
 
     async def run(
         self, params: Dict[str, Any], ctx: Any,
@@ -147,16 +190,9 @@ class VideoDedupTool(ToolBase):
         Returns:
             Dict[str, Any]: 执行结果（status + 验重报告）。
         """
-        ctx.report_progress(0, "开始视频验重")
-        cfg = {
-            "input_dir": params.get("input_dir"),
-            "output": params.get("output"),
-            "recursive": params.get("recursive", False),
-            "device": params.get("device", "auto"),
-            "l2_threshold": params.get("threshold", 0.9),
-            # 内部测试钩子：允许注入数据库路径以隔离测试数据；生产调用不传
-            "db_path": params.get("db_path"),
-        }
+        ctx.report_progress(0, "开始视频验重", "初始化")
+        # 合并 config.yaml 默认值与前端参数（前端参数优先）
+        cfg = _merge_config(params)
         pipeline = CascadePipeline()
         report = pipeline.run_pipeline(
             cfg,
@@ -165,9 +201,9 @@ class VideoDedupTool(ToolBase):
             cancel_event=getattr(ctx, "_cancel_event", None),
         )
         if report["cancelled"]:
-            ctx.report_progress(100, "已取消")
+            ctx.report_progress(100, "已取消", "")
             return {"status": "cancelled", "tool": self.name, "report": report}
-        ctx.report_progress(100, "完成")
+        ctx.report_progress(100, "完成", "")
         return {"status": "completed", "tool": self.name, "report": report}
 
     async def on_cancel(self) -> None:
