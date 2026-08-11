@@ -12,6 +12,7 @@
 """
 
 import os
+import sys
 from typing import Any, Dict, Optional
 
 from aurora.python.helios import (
@@ -26,9 +27,13 @@ from aurora.python.helios import (
 # 通过 __file__ 相对路径计算日志目录
 # __file__ 位于 nexus/Fabrica/fabrica/utils/logger.py
 # 需向上两级到达项目根目录 nexus/Fabrica/
-_CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-_PACKAGE_DIR = os.path.dirname(_CURRENT_DIR)
-_FABRICA_DIR = os.path.dirname(_PACKAGE_DIR)
+# PyInstaller 打包后 __file__ 指向 _MEIPASS 临时目录，改用 sys.executable 定位
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    _FABRICA_DIR = os.path.dirname(sys.executable)
+else:
+    _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    _PACKAGE_DIR = os.path.dirname(_CURRENT_DIR)
+    _FABRICA_DIR = os.path.dirname(_PACKAGE_DIR)
 LOG_DIR = os.path.join(_FABRICA_DIR, "data", "logs")
 
 # 日志格式（T1.2 指定）
