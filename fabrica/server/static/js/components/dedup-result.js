@@ -75,7 +75,13 @@ export function renderDedupResult(container, report) {
             if (window.pywebview && window.pywebview.api) {
                 try {
                     btn.disabled = true;
-                    await window.pywebview.api.open_in_explorer(path);
+                    const status = await window.pywebview.api.open_in_explorer(path);
+                    if (status !== "ok") {
+                        const tip = status === "not_found"
+                            ? "文件或所在目录已不存在，可能已被移动或删除"
+                            : "无法在文件管理器中打开该路径";
+                        alert(tip);
+                    }
                 } catch (e) {
                     console.error("打开文件夹失败:", e);
                 } finally {

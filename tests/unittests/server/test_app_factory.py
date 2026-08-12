@@ -5,7 +5,10 @@
 状态绑定、配置分支、静态目录缺失容错、根/健康检查端点。
 """
 
+import os
+import tempfile
 import unittest
+from unittest import mock
 
 # 先导入 tests.unittests 包以触发 aurora 路径注入，再导入 fabrica 模块。
 from tests.unittests.server.fixtures import (
@@ -120,6 +123,32 @@ class TestCreateApp(unittest.TestCase):
             resp = client.get("/health")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"status": "ok"})
+
+    def test_keyframes_mount_created_when_dir_missing(self):
+        """关键帧目录不存在时也应创建并挂载 /keyframes。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "keyframes")
+            with mock.patch(
+                "fabrica.tools.video_dedup.storage.DEFAULT_KEYFRAME_DIR",
+                missing,
+            ):
+                app = create_app(tool_registry=self.registry)
+            mounts = [
+                r for r in app.routes
+                if isinstance(r, Mount)
+                and getattr(r, "path", None) == "/keyframes"
+            ]
+            self.assertEqual(len(mounts), 1)
+            self.assertIsInstance(mounts[0].app, StaticFiles)
+            self.assertEqual(mounts[0].app.directory, missing)
+            self.assertTrue(os.path.isdir(missing))
+            # 写入图片后应能通过 HTTP 访问
+            os.makedirs(os.path.join(missing, "abc"), exist_ok=True)
+            with open(os.path.join(missing, "abc", "f.jpg"), "wb") as fh:
+                fh.write(b"\xff\xd8\xff\xe0fakejpeg")
+            with TestClient(app) as client:
+                resp = client.get("/keyframes/abc/f.jpg")
+            self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

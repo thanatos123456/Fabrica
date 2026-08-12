@@ -117,12 +117,14 @@ def create_app(
         _keyframe_dir = os.path.join(_exe_dir, "data", "keyframes")
     else:
         _keyframe_dir = DEFAULT_KEYFRAME_DIR
-    if os.path.isdir(_keyframe_dir):
-        app.mount(
-            "/keyframes",
-            StaticFiles(directory=_keyframe_dir),
-            name="keyframes",
-        )
+    # 关键帧目录在任务运行时才被写入，启动时可能尚不存在；
+    # 先确保目录存在再无条件挂载，避免 /keyframes 404、图片无法展示。
+    os.makedirs(_keyframe_dir, exist_ok=True)
+    app.mount(
+        "/keyframes",
+        StaticFiles(directory=_keyframe_dir),
+        name="keyframes",
+    )
 
     # ---- 8. 挂接 API 路由 ----
     app.include_router(router)

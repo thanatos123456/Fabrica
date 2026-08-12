@@ -156,15 +156,17 @@ class DesktopAPI:
             return result[0]
         return None
 
-    def open_in_explorer(self, path: str) -> bool:
+    def open_in_explorer(self, path: str) -> str:
         """在系统文件管理器中打开并选中指定文件/目录。
 
         Args:
             path: 文件或目录的完整路径。
 
         Returns:
-            True 表示成功，False 表示失败。
+            "ok": 已打开；"not_found": 路径不存在；"error": 打开失败。
         """
+        if not os.path.exists(path):
+            return "not_found"
         try:
             if platform.system() == "Windows":
                 if os.path.isfile(path):
@@ -174,6 +176,6 @@ class DesktopAPI:
             elif platform.system() == "Linux":
                 target = os.path.dirname(path) if os.path.isfile(path) else path
                 subprocess.Popen(['xdg-open', target])
-            return True
+            return "ok"
         except Exception:
-            return False
+            return "error"

@@ -355,7 +355,8 @@ input[type="checkbox"] { width: auto; transform: scale(1.2); cursor: pointer; }
     display: flex;
     flex-direction: column;
     gap: 4px;
-    min-width: 100px;
+    flex: 0 0 160px;   /* 固定列宽，保证各列缩略图展示宽高一致 */
+    min-width: 0;
 }
 .keyframe-col-label {
     font-size: 12px;

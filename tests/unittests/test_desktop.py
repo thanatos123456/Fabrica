@@ -146,12 +146,13 @@ class TestDesktopAPI(unittest.TestCase):
     @patch('fabrica.desktop.subprocess.Popen')
     @patch('fabrica.desktop.platform.system', return_value='Windows')
     @patch('fabrica.desktop.os.path.isfile', return_value=True)
+    @patch('fabrica.desktop.os.path.exists', return_value=True)
     def test_open_in_explorer_windows_file(
-        self, mock_isfile, mock_system, mock_popen
+        self, mock_exists, mock_isfile, mock_system, mock_popen
     ):
         """Windows 下对文件应使用 explorer /select,。"""
         result = self.api.open_in_explorer(r'C:\videos\test.mp4')
-        self.assertTrue(result)
+        self.assertEqual(result, "ok")
         mock_popen.assert_called_once_with(
             ['explorer', '/select,', r'C:\videos\test.mp4']
         )
@@ -159,46 +160,60 @@ class TestDesktopAPI(unittest.TestCase):
     @patch('fabrica.desktop.subprocess.Popen')
     @patch('fabrica.desktop.platform.system', return_value='Windows')
     @patch('fabrica.desktop.os.path.isfile', return_value=False)
+    @patch('fabrica.desktop.os.path.exists', return_value=True)
     def test_open_in_explorer_windows_directory(
-        self, mock_isfile, mock_system, mock_popen
+        self, mock_exists, mock_isfile, mock_system, mock_popen
     ):
         """Windows 下对目录应直接使用 explorer 打开。"""
         result = self.api.open_in_explorer(r'C:\videos')
-        self.assertTrue(result)
+        self.assertEqual(result, "ok")
         mock_popen.assert_called_once_with(['explorer', r'C:\videos'])
 
     @patch('fabrica.desktop.subprocess.Popen')
     @patch('fabrica.desktop.platform.system', return_value='Linux')
     @patch('fabrica.desktop.os.path.isfile', return_value=True)
     @patch('fabrica.desktop.os.path.dirname', return_value='/tmp')
+    @patch('fabrica.desktop.os.path.exists', return_value=True)
     def test_open_in_explorer_linux_file(
-        self, mock_dirname, mock_isfile, mock_system, mock_popen
+        self, mock_exists, mock_dirname, mock_isfile, mock_system, mock_popen
     ):
         """Linux 下对文件应使用 xdg-open 打开所在目录。"""
         result = self.api.open_in_explorer('/tmp/video.mp4')
-        self.assertTrue(result)
+        self.assertEqual(result, "ok")
         mock_popen.assert_called_once_with(['xdg-open', '/tmp'])
 
     @patch('fabrica.desktop.subprocess.Popen')
     @patch('fabrica.desktop.platform.system', return_value='Linux')
     @patch('fabrica.desktop.os.path.isfile', return_value=False)
+    @patch('fabrica.desktop.os.path.exists', return_value=True)
     def test_open_in_explorer_linux_directory(
-        self, mock_isfile, mock_system, mock_popen
+        self, mock_exists, mock_isfile, mock_system, mock_popen
     ):
         """Linux 下对目录应直接使用 xdg-open 打开。"""
         result = self.api.open_in_explorer('/tmp/videos')
-        self.assertTrue(result)
+        self.assertEqual(result, "ok")
         mock_popen.assert_called_once_with(['xdg-open', '/tmp/videos'])
 
     @patch('fabrica.desktop.subprocess.Popen', side_effect=Exception("fail"))
     @patch('fabrica.desktop.platform.system', return_value='Windows')
     @patch('fabrica.desktop.os.path.isfile', return_value=True)
-    def test_open_in_explorer_exception_returns_false(
-        self, mock_isfile, mock_system, mock_popen
+    @patch('fabrica.desktop.os.path.exists', return_value=True)
+    def test_open_in_explorer_exception_returns_error(
+        self, mock_exists, mock_isfile, mock_system, mock_popen
     ):
-        """异常时应返回 False。"""
+        """异常时应返回 error。"""
         result = self.api.open_in_explorer(r'C:\videos\test.mp4')
-        self.assertFalse(result)
+        self.assertEqual(result, "error")
+
+    @patch('fabrica.desktop.subprocess.Popen')
+    @patch('fabrica.desktop.os.path.exists', return_value=False)
+    def test_open_in_explorer_missing_path(
+        self, mock_exists, mock_popen
+    ):
+        """路径不存在时应返回 not_found 且不调用 Popen。"""
+        result = self.api.open_in_explorer(r'C:\videos\gone.mp4')
+        self.assertEqual(result, "not_found")
+        mock_popen.assert_not_called()
 
 
 if __name__ == "__main__":

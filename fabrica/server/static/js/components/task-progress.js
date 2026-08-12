@@ -51,6 +51,20 @@ export async function renderTaskProgress(container, taskId) {
     // 渲染已有日志
     (detail.logs || []).forEach((log) => appendLog(container, log));
 
+    // 终态任务：直接从 REST 详情渲染结果，避免依赖 WebSocket 重连重放完成事件。
+    // 从历史/返回重新进入时任务已完成，WebSocket 不会再次推送 onComplete。
+    if (["completed", "failed", "cancelled"].includes(detail.status)) {
+        renderResult(
+            document.getElementById("result-box"),
+            detail.status, detail.result, detail.error
+        );
+        const fill = document.getElementById("progress-fill");
+        if (fill) fill.style.width = "100%";
+        const cancelBtn = document.getElementById("cancel-btn");
+        if (cancelBtn) cancelBtn.style.display = "none";
+        return; // 终态任务无需 WebSocket，跳过连接
+    }
+
     const cancelBtn = document.getElementById("cancel-btn");
     cancelBtn?.addEventListener("click", async () => {
         cancelBtn.disabled = true;
@@ -75,14 +89,7 @@ export async function renderTaskProgress(container, taskId) {
         onLog: (ev) => appendLog(container, { level: ev.level, message: ev.message, timestamp: new Date().toISOString() }),
         onComplete: (ev) => {
             setStatus(container, "completed");
-            const box = document.getElementById("result-box");
-            if (box && ev.result !== undefined) {
-                if (ev.result.tool === "video_dedup" && ev.result.report) {
-                    renderDedupResult(box, ev.result.report);
-                } else {
-                    box.innerHTML = `<div class="result-box">${escapeHtml(JSON.stringify(ev.result, null, 2))}</div>`;
-                }
-            }
+            renderResult(document.getElementById("result-box"), "completed", ev.result, null);
             const fill = document.getElementById("progress-fill");
             if (fill) fill.style.width = "100%";
             const cancelBtn = document.getElementById("cancel-btn");
@@ -112,6 +119,19 @@ export async function renderTaskProgress(container, taskId) {
     // 心跳
     const pingTimer = setInterval(() => ws.sendPing(), 15000);
     container._pingTimer = pingTimer;
+}
+
+function renderResult(box, status, result, error) {
+    if (!box) return;
+    if (status === "completed" && result !== undefined && result !== null) {
+        if (result.tool === "video_dedup" && result.report) {
+            renderDedupResult(box, result.report);
+        } else {
+            box.innerHTML = `<div class="result-box">${escapeHtml(JSON.stringify(result, null, 2))}</div>`;
+        }
+    } else if (status === "failed" && error) {
+        box.innerHTML = `<div class="error-tip">${escapeHtml(error)}</div>`;
+    }
 }
 
 function setStatus(container, status) {
