@@ -247,6 +247,53 @@ class TestCluster(BasePipelineTest):
         self.assertTrue(found)
 
 
+class TestProgressAlignment(BasePipelineTest):
+    """进度上报与日志对齐的回归测试（进度不得超前实际处理）。"""
+
+    def test_l2_progress_reflects_completed_videos(self):
+        """L2 进度按已完成的视频数单调推进（33/67/100），并行下仍确定。"""
+        events = []
+
+        def on_progress(percent, msg, stage):
+            events.append((stage, percent))
+
+        pipe = self.pipeline_cls(
+            storage=self.storage, index=self.index, extractor=None
+        )
+        pipe.run_pipeline(self.cfg, progress_cb=on_progress)
+        # 仅取 L2 阶段进度，3 个视频 => 0/33/67/100，单调递增
+        l2 = [p for s, p in events if s == "L2 pHash 序列比对"]
+        self.assertEqual(l2, [0, 33, 67, 100])
+
+    def test_final_progress_reaches_100(self):
+        """流程结束（L3 跳过）时进度最终到达 100。"""
+        events = []
+        pipe = self.pipeline_cls(
+            storage=self.storage, index=self.index, extractor=None
+        )
+        pipe.run_pipeline(
+            self.cfg, progress_cb=lambda p, m, s: events.append(p)
+        )
+        self.assertEqual(events[-1], 100)
+
+    def test_l3_progress_reaches_100_when_extraction_fails(self):
+        """L3 特征提取失败时进度仍推进并最终到达 100，不中断。"""
+        self.index.generate_candidates.return_value = [("v1", "v2")]
+        with mock.patch.object(
+            self.pipeline, "sequence_score", return_value=0.6
+        ):
+            extractor = mock.Mock()
+            extractor.extract.side_effect = RuntimeError("boom")
+            events = []
+            pipe = self.pipeline_cls(
+                storage=self.storage, index=self.index, extractor=extractor
+            )
+            pipe.run_pipeline(
+                self.cfg, progress_cb=lambda p, m, s: events.append(p)
+            )
+        self.assertEqual(events[-1], 100)
+
+
 class TestOutputFile(BasePipelineTest):
     """输出文件测试。"""
 
@@ -284,6 +331,142 @@ class TestScanVideos(unittest.TestCase):
             open(os.path.join(sub, "x.mp4"), "w").close()
             self.assertEqual(len(scan_videos(tmp, recursive=False)), 0)
             self.assertEqual(len(scan_videos(tmp, recursive=True)), 1)
+
+
+class TestSaveKeyframes(unittest.TestCase):
+    """_save_keyframes 关键帧写盘测试。"""
+
+    def test_save_keyframes_writes_real_jpeg_files(self):
+        """应把采样帧真实保存为 JPEG 文件并返回可访问的 URL。"""
+        from PIL import Image
+        from fabrica.tools.video_dedup.pipeline import CascadePipeline
+        from fabrica.tools.video_dedup.sampler import SampledFrame
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "fabrica.tools.video_dedup.pipeline.DEFAULT_KEYFRAME_DIR",
+                os.path.join(tmp, "keyframes"),
+            ):
+                frames = [
+                    SampledFrame(
+                        idx=i,
+                        ts=float(i),
+                        image=Image.new("RGB", (8, 8), "red"),
+                    )
+                    for i in range(3)
+                ]
+                with mock.patch(
+                    "fabrica.tools.video_dedup.pipeline.sample_frames",
+                    return_value=(frames, 3.0),
+                ):
+                    groups = [{
+                        "videos": [
+                            {"id": "/tmp/v.mp4", "path": "/tmp/v.mp4"},
+                        ],
+                    }]
+                    pipe = CascadePipeline()
+                    kf = pipe._save_keyframes(groups, {}, [])
+            self.assertIn("/tmp/v.mp4", kf)
+            url = list(kf["/tmp/v.mp4"].values())[0]
+            # URL 应指向真实存在的 JPEG 文件
+            rel = url.replace("/keyframes/", "", 1)
+            full = os.path.join(tmp, "keyframes", rel)
+            self.assertTrue(os.path.isfile(full))
+            with open(full, "rb") as fh:
+                self.assertTrue(fh.read().startswith(b"\xff\xd8"))
+
+
+class TestBlackFrameFiltering(unittest.TestCase):
+    """黑帧过滤测试。"""
+
+    def test_is_near_black(self):
+        """接近纯黑的黑图返回 True，亮图返回 False。"""
+        from PIL import Image
+        from fabrica.tools.video_dedup.pipeline import CascadePipeline
+
+        black = Image.new("RGB", (8, 8), (0, 0, 0))
+        bright = Image.new("RGB", (8, 8), (200, 200, 200))
+        self.assertTrue(CascadePipeline._is_near_black(black))
+        self.assertFalse(CascadePipeline._is_near_black(bright))
+
+    def test_select_keyframes_filters_black_frames(self):
+        """含黑帧的采样帧经 _save_keyframes 保存后，黑帧不被保存。"""
+        from PIL import Image
+        from fabrica.tools.video_dedup.pipeline import (
+            CascadePipeline, DEFAULT_KEYFRAME_DIR,
+        )
+        from fabrica.tools.video_dedup.sampler import SampledFrame
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "fabrica.tools.video_dedup.pipeline.DEFAULT_KEYFRAME_DIR",
+                os.path.join(tmp, "keyframes"),
+            ):
+                frames = [
+                    SampledFrame(
+                        idx=i,
+                        ts=float(i),
+                        image=Image.new("RGB", (8, 8), "red"),
+                    )
+                    for i in range(3)
+                ]
+                # 把 idx=1 的帧替换为纯黑帧
+                frames[1] = SampledFrame(
+                    idx=1, ts=1.0,
+                    image=Image.new("RGB", (8, 8), (0, 0, 0)),
+                )
+                with mock.patch(
+                    "fabrica.tools.video_dedup.pipeline.sample_frames",
+                    return_value=(frames, 3.0),
+                ):
+                    groups = [{
+                        "videos": [
+                            {"id": "/tmp/v.mp4", "path": "/tmp/v.mp4"},
+                        ],
+                    }]
+                    pipe = CascadePipeline()
+                    kf = pipe._save_keyframes(groups, {}, [])
+            self.assertIn("/tmp/v.mp4", kf)
+            url_map = kf["/tmp/v.mp4"]
+            # 黑帧 idx=1 不应被保存
+            self.assertNotIn(1, url_map)
+            self.assertEqual(len(url_map), 2)
+
+    def test_select_keyframes_falls_back_when_all_black(self):
+        """全部接近纯黑时仍回退保存原始帧（不产生空列）。"""
+        from PIL import Image
+        from fabrica.tools.video_dedup.pipeline import (
+            CascadePipeline, DEFAULT_KEYFRAME_DIR,
+        )
+        from fabrica.tools.video_dedup.sampler import SampledFrame
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "fabrica.tools.video_dedup.pipeline.DEFAULT_KEYFRAME_DIR",
+                os.path.join(tmp, "keyframes"),
+            ):
+                frames = [
+                    SampledFrame(
+                        idx=i,
+                        ts=float(i),
+                        image=Image.new("RGB", (8, 8), (0, 0, 0)),
+                    )
+                    for i in range(3)
+                ]
+                with mock.patch(
+                    "fabrica.tools.video_dedup.pipeline.sample_frames",
+                    return_value=(frames, 3.0),
+                ):
+                    groups = [{
+                        "videos": [
+                            {"id": "/tmp/v.mp4", "path": "/tmp/v.mp4"},
+                        ],
+                    }]
+                    pipe = CascadePipeline()
+                    kf = pipe._save_keyframes(groups, {}, [])
+            self.assertIn("/tmp/v.mp4", kf)
+            # 全黑时回退，仍保存原始帧
+            self.assertEqual(len(kf["/tmp/v.mp4"]), 3)
 
 
 if __name__ == "__main__":

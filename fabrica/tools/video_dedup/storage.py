@@ -22,7 +22,7 @@ import sys
 import sqlite3
 import struct
 import threading
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -52,6 +52,11 @@ DEFAULT_FEATURE_DIR = os.path.join(
 )
 # 关键帧图像目录（T6.3）
 DEFAULT_KEYFRAME_DIR = os.path.join(_FABRICA_DIR, "data", "keyframes")
+
+# 判重报告 JSON 目录（按任务隔离）
+DEFAULT_REPORT_DIR = os.path.join(
+    _FABRICA_DIR, "data", "video_dedup", "reports"
+)
 
 # 深度特征维度（与 CLIPExtractor.extract 输出一致）
 DEEP_FEATURE_DIM = 512
@@ -280,6 +285,22 @@ class VideoStorage:
             self._conn.execute(
                 "UPDATE videos SET file_hash = ? WHERE id = ?",
                 (hash_val, video_id),
+            )
+            self._conn.commit()
+
+    def set_hashes(self, pairs: Iterable[Tuple[str, str]]) -> None:
+        """批量设置视频的文件哈希值（单事务提交，减少 fsync）。
+
+        Args:
+            pairs: (video_id, hash_val) 迭代器。
+        """
+        batch = [(h, vid) for vid, h in pairs]
+        if not batch:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE videos SET file_hash = ? WHERE id = ?",
+                batch,
             )
             self._conn.commit()
 

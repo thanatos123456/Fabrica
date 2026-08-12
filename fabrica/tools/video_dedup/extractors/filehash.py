@@ -7,8 +7,8 @@
 import hashlib
 
 
-# 默认分块大小：1MB
-DEFAULT_BLOCK_SIZE = 1024 * 1024
+# 默认分块大小：8MB（加大读块，减少 read 系统调用次数）
+DEFAULT_BLOCK_SIZE = 8 * 1024 * 1024
 
 
 def file_hash(

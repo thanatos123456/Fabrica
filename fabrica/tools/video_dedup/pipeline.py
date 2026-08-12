@@ -19,6 +19,7 @@
 import json
 import os
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from fabrica.tools.video_dedup.extractors.deepfeat import CLIPExtractor, FEATURE_DIM
@@ -57,6 +58,9 @@ STAGE_L2 = "L2 pHash 序列比对"
 STAGE_L3 = "L3 深度特征比对"
 STAGE_CLUSTER = "聚类合成重复组"
 
+# 接近纯黑判定阈值（平均亮度，0-255）
+BLACK_FRAME_THRESHOLD = 8
+
 
 # ============================================================================
 # 扫描
@@ -93,6 +97,43 @@ def scan_videos(root: str, recursive: bool = False) -> List[VideoInfo]:
         if not recursive:
             break
     return videos
+
+
+# ============================================================================
+# L2 并行工作函数
+# ============================================================================
+
+def _default_l2_workers() -> int:
+    """L2 并行抽帧的默认线程数。"""
+    return min(4, os.cpu_count() or 1)
+
+
+def _l2_worker(
+    vid: str, path: str, cfg: Dict[str, Any],
+) -> tuple:
+    """L2 单视频工作函数（多线程执行）。
+
+    只做抽帧 + pHash，不触碰共享的 storage/index，避免并发写。
+
+    Returns:
+        成功: (vid, seq, frames, duration)
+        失败: (vid, None, None, 错误信息)
+    """
+    try:
+        frames, duration = sample_frames(
+            path,
+            min_frames=cfg.get("sample_min_frames", 16),
+            max_frames=cfg.get("sample_max_frames", 100),
+            target_fps=cfg.get("sample_target_fps", 1.0),
+            frame_interval=cfg.get("sample_frame_interval", FRAME_INTERVAL),
+            resize=cfg.get("sample_resize", (224, 224)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (vid, None, None, str(exc))
+    if not frames:
+        return (vid, None, None, "无法抽帧（损坏或空）")
+    seq = video_phash_sequence(frames)
+    return (vid, seq, frames, duration)
 
 
 # ============================================================================
@@ -211,7 +252,15 @@ class CascadePipeline:
         self._report(progress_cb, 0, "L1 文件哈希去重", STAGE_L1)
         hash_videos = list(self.storage.videos_without_hash())
         hash_n = len(hash_videos)
+        # 批量提交阈值：累计到该数量后一次 commit，减少每文件的 fsync
+        _hash_batch = 64
+        pending_hashes: List[tuple] = []
         for i, v in enumerate(hash_videos):
+            try:
+                pending_hashes.append((v.id, file_hash(v.path)))
+            except Exception as exc:  # noqa: BLE001
+                report["errors"].append(f"L1 {v.id}: {exc}")
+            # 处理完成后再上报进度并打日志，保证进度与日志计数一致
             self._report(
                 progress_cb,
                 round((i + 1) / hash_n * 100),
@@ -219,10 +268,11 @@ class CascadePipeline:
                 STAGE_L1,
             )
             self._log(log_cb, "info", f"L1 哈希 [{i + 1}/{hash_n}] {v.path}")
-            try:
-                self.storage.set_hash(v.id, file_hash(v.path))
-            except Exception as exc:  # noqa: BLE001
-                report["errors"].append(f"L1 {v.id}: {exc}")
+            if len(pending_hashes) >= _hash_batch:
+                self.storage.set_hashes(pending_hashes)
+                pending_hashes = []
+        if pending_hashes:
+            self.storage.set_hashes(pending_hashes)
         if hash_n == 0:
             self._report(progress_cb, 100, "L1 文件哈希去重", STAGE_L1)
         l1_groups = list(self.storage.group_by_hash().values())
@@ -242,40 +292,51 @@ class CascadePipeline:
         self._report(progress_cb, 0, "L2 pHash 序列比对", STAGE_L2)
         seqs: Dict[str, Any] = {}
         rep_n = len(rep_ids)
-        for i, vid in enumerate(rep_ids):
-            self._report(
-                progress_cb,
-                round((i + 1) / rep_n * 100),
-                f"L2 pHash 序列比对 [{i + 1}/{rep_n}]",
-                STAGE_L2,
-            )
-            path = dict((v.id, v.path) for v in videos).get(vid, vid)
-            try:
-                frames, duration = sample_frames(
-                    path,
-                    min_frames=cfg.get("sample_min_frames", 16),
-                    max_frames=cfg.get("sample_max_frames", 100),
-                    target_fps=cfg.get("sample_target_fps", 1.0),
-                    frame_interval=cfg.get("sample_frame_interval", FRAME_INTERVAL),
-                    resize=cfg.get("sample_resize", (224, 224)),
-                )
-                if not frames:
-                    report["errors"].append(f"L2 {vid}: 无法抽帧（损坏或空）")
-                    continue
-                self._log(
-                    log_cb, "info",
-                    f"L2 抽帧 [{i + 1}/{rep_n}] {path}，"
-                    f"采样 {len(frames)} 帧，时长 {duration} 秒",
-                )
-                seq = video_phash_sequence(frames)
-                self.storage.save_phash(vid, seq, frames)
-                self.index.add(vid, seq)
-                self._frame_cache[vid] = frames
-                seqs[vid] = seq
-            except Exception as exc:  # noqa: BLE001
-                report["errors"].append(f"L2 {vid}: {exc}")
         if rep_n == 0:
             self._report(progress_cb, 100, "L2 pHash 序列比对", STAGE_L2)
+        else:
+            path_by_id = dict((v.id, v.path) for v in videos)
+            workers = cfg.get("l2_workers") or _default_l2_workers()
+            done = 0
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(
+                        _l2_worker, vid, path_by_id.get(vid, vid), cfg,
+                    ): vid
+                    for vid in rep_ids
+                }
+                for fut in as_completed(futures):
+                    vid = futures[fut]
+                    done += 1
+                    try:
+                        _vid, seq, frames, extra = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        report["errors"].append(f"L2 {vid}: {exc}")
+                    else:
+                        if seq is None:
+                            report["errors"].append(f"L2 {vid}: {extra}")
+                        else:
+                            path = path_by_id.get(vid, vid)
+                            self._log(
+                                log_cb, "info",
+                                f"L2 抽帧 [{done}/{rep_n}] {path}，"
+                                f"采样 {len(frames)} 帧，时长 {extra} 秒",
+                            )
+                            self.storage.save_phash(vid, seq, frames)
+                            self.index.add(vid, seq)
+                            self._frame_cache[vid] = frames
+                            seqs[vid] = seq
+                    # 每完成一个视频上报进度，与日志计数一致
+                    self._report(
+                        progress_cb,
+                        round(done / rep_n * 100),
+                        f"L2 pHash 序列比对 [{done}/{rep_n}]",
+                        STAGE_L2,
+                    )
+                    if self._cancelled(cancel_event):
+                        for f in futures:
+                            f.cancel()
+                        break
 
         candidates = self.index.generate_candidates(
             rep_ids,
@@ -313,29 +374,30 @@ class CascadePipeline:
             )
             suspect_n = len(suspect_vids)
             for i, vid in enumerate(suspect_vids):
+                try:
+                    frames = self._frame_cache.get(vid)
+                    if not frames:
+                        report["errors"].append(f"L3 {vid}: 无缓存帧，跳过")
+                    else:
+                        feats = self.extractor.extract(
+                            [f.image for f in frames]
+                        )
+                        self._log(
+                            log_cb, "info",
+                            f"L3 提取 [{i + 1}/{suspect_n}] {vid}，"
+                            f"{len(feats)} 帧",
+                        )
+                        self.storage.save_deep(vid, feats)
+                        deep_index.add(vid, feats)
+                except Exception as exc:  # noqa: BLE001
+                    report["errors"].append(f"L3 {vid}: {exc}")
+                # 处理完成后再上报进度，与日志计数一致
                 self._report(
                     progress_cb,
                     round((i + 1) / suspect_n * 100),
                     f"L3 深度特征比对 [{i + 1}/{suspect_n}]",
                     STAGE_L3,
                 )
-                try:
-                    frames = self._frame_cache.get(vid)
-                    if not frames:
-                        report["errors"].append(f"L3 {vid}: 无缓存帧，跳过")
-                        continue
-                    feats = self.extractor.extract(
-                        [f.image for f in frames]
-                    )
-                    self._log(
-                        log_cb, "info",
-                        f"L3 提取 [{i + 1}/{suspect_n}] {vid}，"
-                        f"{len(feats)} 帧",
-                    )
-                    self.storage.save_deep(vid, feats)
-                    deep_index.add(vid, feats)
-                except Exception as exc:  # noqa: BLE001
-                    report["errors"].append(f"L3 {vid}: {exc}")
 
             # 用深度索引检索近邻生成候选对，再逐对深度序列打分
             deep_candidates = deep_index.generate_candidates(
@@ -393,6 +455,8 @@ class CascadePipeline:
         )
 
         self._report(progress_cb, 100, "完成", STAGE_CLUSTER)
+        # 记录输出文件路径，供删除任务时定位并清理报告文件
+        report["_output"] = cfg.get("output")
         self._write_report(report, cfg.get("output"))
         return report
 
@@ -471,6 +535,50 @@ class CascadePipeline:
     # ---- 关键帧保存（T6.3）----
 
     @staticmethod
+    def _is_near_black(
+        image, thresh: int = BLACK_FRAME_THRESHOLD,
+    ) -> bool:
+        """判断图像是否接近纯黑（平均亮度低于阈值）。
+
+        Args:
+            image: PIL 图像。
+            thresh: 平均亮度阈值（0-255）。
+
+        Returns:
+            True 表示接近纯黑。
+        """
+        gray = image.convert("L")
+        mean = sum(gray.getdata()) / (gray.width * gray.height)
+        return mean < thresh
+
+    def _select_keyframes(
+        self, frames, max_kf: int,
+        black_thresh: int = BLACK_FRAME_THRESHOLD,
+    ):
+        """过滤接近纯黑的帧后，均匀选取最多 max_kf 张关键帧。
+
+        全部接近纯黑时回退到原始帧，保证每个视频至少展示关键帧。
+        保留原始帧索引，供匹配帧高亮使用。
+
+        Args:
+            frames: 采样帧列表。
+            max_kf: 最多关键帧数。
+            black_thresh: 接近纯黑亮度阈值。
+
+        Returns:
+            选取后的帧列表。
+        """
+        non_black = [
+            f for f in frames
+            if not self._is_near_black(f.image, black_thresh)
+        ]
+        pool = non_black if non_black else frames
+        if len(pool) > max_kf:
+            step = len(pool) / max_kf
+            return [pool[int(i * step)] for i in range(max_kf)]
+        return pool
+
+    @staticmethod
     def _safe_dir_name(video_id: str) -> str:
         """将 video_id 转为安全目录名（MD5 哈希）。"""
         return hashlib.md5(video_id.encode("utf-8")).hexdigest()
@@ -512,15 +620,8 @@ class CascadePipeline:
                     )
                     if not frames:
                         continue
-                    # 均匀选取最多 MAX_KEYFRAMES 帧（保留原始帧索引）
-                    if len(frames) > MAX_KEYFRAMES:
-                        step = len(frames) / MAX_KEYFRAMES
-                        selected = [
-                            frames[int(i * step)]
-                            for i in range(MAX_KEYFRAMES)
-                        ]
-                    else:
-                        selected = frames
+                    # 过滤接近纯黑的帧并均匀选取最多 MAX_KEYFRAMES 帧（保留原始帧索引）
+                    selected = self._select_keyframes(frames, MAX_KEYFRAMES)
                     dir_name = self._safe_dir_name(vid)
                     out_dir = os.path.join(DEFAULT_KEYFRAME_DIR, dir_name)
                     os.makedirs(out_dir, exist_ok=True)
