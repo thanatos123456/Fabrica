@@ -39,7 +39,7 @@ class TestIsCudaAvailable(unittest.TestCase):
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
         with patch.object(device, "_TORCH_AVAILABLE", True):
-            with patch.object(device, "torch", mock_torch):
+            with patch.object(device, "_torch", mock_torch):
                 result = is_cuda_available()
                 self.assertTrue(result)
 
@@ -78,7 +78,7 @@ class TestGetDevice(unittest.TestCase):
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
         with patch.object(device, "_TORCH_AVAILABLE", True):
-            with patch.object(device, "torch", mock_torch):
+            with patch.object(device, "_torch", mock_torch):
                 result = get_device("auto")
                 self.assertEqual(result, "cuda")
 
@@ -120,7 +120,7 @@ class TestGetDeviceInfo(unittest.TestCase):
         mock_props.total_memory = 24 * 1024 ** 3
         mock_torch.cuda.get_device_properties.return_value = mock_props
         with patch.object(device, "_TORCH_AVAILABLE", True):
-            with patch.object(device, "torch", mock_torch):
+            with patch.object(device, "_torch", mock_torch):
                 info = get_device_info()
                 self.assertEqual(info["device"], "cuda")
                 self.assertTrue(info["cuda_available"])
@@ -152,7 +152,7 @@ class TestGetBatchSizeHint(unittest.TestCase):
         mock_torch = MagicMock()
         mock_torch.cuda.is_available.return_value = True
         with patch.object(device, "_TORCH_AVAILABLE", True):
-            with patch.object(device, "torch", mock_torch):
+            with patch.object(device, "_torch", mock_torch):
                 result = get_batch_size_hint()
                 self.assertEqual(result, 64)
 

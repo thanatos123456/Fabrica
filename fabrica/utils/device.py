@@ -12,16 +12,26 @@ get_device("auto") 回退到 "cpu"，不会抛出异常。
     info = get_device_info()      # 设备详情字典
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-# 模块级检测 PyTorch 可用性
 # PyTorch 是可选依赖（仅在视频验重 L3 深度特征提取时需要），
-# 未安装时降级到 CPU 模式，不抛异常
-try:
-    import torch
-    _TORCH_AVAILABLE = True
-except ImportError:
-    _TORCH_AVAILABLE = False
+# 未安装时降级到 CPU 模式。为不拖慢启动，改为首次使用时才懒加载 torch。
+_torch = None
+_TORCH_AVAILABLE: Optional[bool] = None
+
+
+def _ensure_torch():
+    """懒加载 torch，幂等，返回 torch 模块或 None。"""
+    global _torch, _TORCH_AVAILABLE
+    if _TORCH_AVAILABLE is None:
+        try:
+            import torch
+            _torch = torch
+            _TORCH_AVAILABLE = True
+        except ImportError:
+            _torch = None
+            _TORCH_AVAILABLE = False
+    return _torch
 
 
 # ============================================================================
@@ -34,7 +44,8 @@ def is_cuda_available() -> bool:
     Returns:
         CUDA 可用时返回 True，否则返回 False。
     """
-    if not _TORCH_AVAILABLE:
+    torch = _ensure_torch()
+    if torch is None:
         return False
     return torch.cuda.is_available()
 
@@ -91,6 +102,9 @@ def get_device_info() -> Dict[str, Any]:
         "cuda_available": is_cuda_available(),
     }
     if device == "cuda":
+        torch = _ensure_torch()
+        if torch is None:
+            return info
         try:
             info["cuda_version"] = torch.version.cuda
             info["cuda_device_name"] = torch.cuda.get_device_name(0)

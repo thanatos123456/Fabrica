@@ -187,14 +187,29 @@ def main():
         app = create_app()
 
         # ---- 4.0 加载工具插件（触发 @tool.register 注册）----
-        # 扫描 fabrica/tools 目录下的工具子包，使平台能识别已注册工具。
+        # 扫描 fabrica/tools 目录下的工具子包。该导入会拉取 torch/open_clip/
+        # faiss/av 等重库，因此放到后台线程执行，避免阻塞窗口显示。
         tools_dir = os.path.join(
             project_root, "nexus", "Fabrica", "fabrica", "tools"
         )
-        tool.discover([tools_dir])
-        logger.info(
-            f"已加载工具: {[t.name for t in tool.list_tools()]}"
+
+        def _discover_tools():
+            try:
+                tool.discover([tools_dir])
+                logger.info(
+                    f"已加载工具: {[t.name for t in tool.list_tools()]}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("后台加载工具失败: %s", exc)
+            finally:
+                tool.notify_ready()
+
+        discovery_thread = threading.Thread(
+            target=_discover_tools,
+            daemon=True,
+            name="tool-discovery",
         )
+        discovery_thread.start()
 
         # ---- 4.1 初始化 hestia 资源池（CPU 密集型工具调度）----
         tool.init_pool()

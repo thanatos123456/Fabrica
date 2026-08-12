@@ -14,11 +14,14 @@
         print(f.idx, f.ts, f.image.size)
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from PIL import Image
-import av
+# 注意：av（PyAV/ffmpeg）较重，仅在 sample_frames 内部懒加载，
+# 避免 storage → sampler 的导入链在启动时加载它。
 
 
 # ============================================================================
