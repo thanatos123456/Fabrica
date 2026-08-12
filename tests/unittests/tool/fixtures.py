@@ -66,6 +66,40 @@ class CpuTool(ToolBase):
         return {"cpu": True}
 
 
+class CleanupTool(ToolBase):
+    """带中间产物清理钩子的工具（测试 TaskRegistry 清理编排）。"""
+
+    name = "cleanup_tool"
+    title = "Cleanup Tool"
+    description = "测试产物清理钩子"
+    icon = "🧹"
+    params = []
+
+    def __init__(self):
+        self.cleanup_calls = []
+        self.orphan_calls = []
+
+    async def on_init(self):
+        pass
+
+    async def validate(self, params):
+        return []
+
+    async def run(self, params, ctx):
+        return {"status": "completed", "tool": self.name, "report": {}}
+
+    def extract_refs(self, result):
+        return {"h1"}
+
+    def cleanup_task(self, result, referenced_ids):
+        self.cleanup_calls.append((result, set(referenced_ids)))
+        return {"keyframes": 0, "features": 0, "output": 0}
+
+    def cleanup_orphans(self, referenced_ids, referenced_outputs=()):
+        self.orphan_calls.append((set(referenced_ids), set(referenced_outputs)))
+        return {"keyframes": 1, "features": 2, "output": 0}
+
+
 class IOTool(ToolBase):
     """IO 密集型工具（默认 cpu_intensive=False），传入 seconds 控制睡眠时长。"""
 
@@ -201,7 +235,11 @@ def fresh_registry() -> ToolRegistry:
         全新的 ToolRegistry 实例。
     """
     ToolRegistry._instance = None
-    return ToolRegistry()
+    registry = ToolRegistry()
+    # 测试隔离：关闭真实文件持久化，避免污染真实 data/tasks.json
+    # 与既有断言。需验证持久化时由测试另行设置 _history_path。
+    registry._history_path = None
+    return registry
 
 
 def reset_registry(registry: ToolRegistry) -> None:

@@ -124,6 +124,18 @@ async def list_tasks(registry: Any = Depends(get_registry)) -> List[TaskSummary]
     return registry.list_tasks()
 
 
+@router.post("/tasks/cleanup")
+async def cleanup_tasks(
+    registry: Any = Depends(get_registry),
+) -> Dict[str, Any]:
+    """清理所有不再被任何任务引用的中间产物。
+
+    Returns:
+        {"cleaned": {"keyframes": int, "features": int, "output": int}}。
+    """
+    return {"cleaned": registry.cleanup_orphans()}
+
+
 @router.get("/tasks/{task_id}", response_model=TaskDetail)
 async def get_task(task_id: str, registry: Any = Depends(get_registry)) -> TaskDetail:
     """获取单个任务完整状态和结果。"""

@@ -6,6 +6,7 @@
 """
 
 import unittest
+from unittest.mock import patch
 
 # 先导入 tests.unittests 包以触发 aurora 路径注入，再导入 fabrica 模块。
 from tests.unittests.server.fixtures import (
@@ -158,6 +159,19 @@ class TestRoutes(unittest.TestCase):
         resp = self.client.delete("/api/tasks/nonexistent")
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["error_code"], "TASK_NOT_FOUND")
+
+    def test_cleanup_tasks(self):
+        """POST /api/tasks/cleanup 应返回清理计数。"""
+        with patch.object(
+            self.registry, "cleanup_orphans",
+            return_value={"keyframes": 3, "features": 5, "output": 1},
+        ):
+            resp = self.client.post("/api/tasks/cleanup")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json(),
+            {"cleaned": {"keyframes": 3, "features": 5, "output": 1}},
+        )
 
 
 if __name__ == "__main__":

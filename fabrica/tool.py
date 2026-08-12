@@ -64,14 +64,18 @@
 
 import asyncio
 import importlib
+import json
+import os
 import re
+import sys
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,6 +83,18 @@ from aurora.python.hestia import PoolConfig, ResourcePool
 from fabrica.utils.exceptions import TaskTimeoutError
 from fabrica.utils.helpers import PathUtils
 from fabrica.utils.logger import logger
+
+
+# ============================================================================
+# 路径常量
+# ============================================================================
+
+# 任务历史 JSON 文件路径（兼容 PyInstaller 打包：exe 同级 data 目录）
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _FABRICA_DIR = os.path.dirname(sys.executable)
+else:
+    _FABRICA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TASK_HISTORY_PATH = os.path.join(_FABRICA_DIR, "data", "tasks.json")
 
 
 # ============================================================================
@@ -672,6 +688,71 @@ class TaskStateMachine:
             logs=self._logs,
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为可 JSON 序列化的字典（用于任务历史持久化）。
+
+        datetime 字段转为 ISO 字符串，便于 json 序列化。
+
+        Returns:
+            任务状态与结果的字典表示。
+        """
+        return {
+            "task_id": self.task_id,
+            "tool_name": self.tool_name,
+            "params": self.params,
+            "status": self._status.value,
+            "progress": self._progress,
+            "created_at": self._created_at.isoformat(),
+            "completed_at": (
+                self._completed_at.isoformat()
+                if self._completed_at else None
+            ),
+            "result": self._result,
+            "error": self._error,
+            "logs": [
+                {
+                    "level": log["level"],
+                    "message": log["message"],
+                    "timestamp": log["timestamp"].isoformat(),
+                }
+                for log in self._logs
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskStateMachine":
+        """从字典重建任务状态机（用于启动时加载任务历史）。
+
+        Args:
+            data: to_dict() 生成的字典。
+
+        Returns:
+            重建的任务状态机实例。
+        """
+        sm = cls(
+            task_id=data["task_id"],
+            tool_name=data["tool_name"],
+            params=data.get("params", {}),
+        )
+        sm._status = TaskStatus(data["status"])
+        sm._progress = data.get("progress", 0.0)
+        sm._created_at = datetime.fromisoformat(data["created_at"])
+        completed = data.get("completed_at")
+        sm._completed_at = (
+            datetime.fromisoformat(completed) if completed else None
+        )
+        sm._result = data.get("result")
+        sm._error = data.get("error")
+        sm._logs = [
+            {
+                "level": log.get("level"),
+                "message": log.get("message"),
+                "timestamp": datetime.fromisoformat(log["timestamp"]),
+            }
+            for log in data.get("logs", [])
+        ]
+        return sm
+
 
 # ============================================================================
 # 工具注册中心
@@ -715,6 +796,14 @@ class ToolRegistry:
             cls._instance._on_init_done = set()
             cls._instance._initialized = False
             cls._instance._pool = None   # hestia 资源池实例（懒加载）
+            # 工具发现完成事件：后台线程完成重库导入后置位，
+            # 供 run_tool / list_tools 在首次使用时等待。
+            cls._instance._discovery_done = threading.Event()
+            # 是否已发起工具发现（用于决定 run_tool/list_tools 是否需等待）
+            cls._instance._discovery_started = False
+            # 任务历史持久化：文件路径 + 是否已从磁盘加载
+            cls._instance._history_path = TASK_HISTORY_PATH
+            cls._instance._history_loaded = False
         return cls._instance
 
     # ------------------------------------------------------------------
@@ -757,6 +846,7 @@ class ToolRegistry:
         """
         if tool_dirs is not None:
             self._tool_dirs = [Path(d) for d in tool_dirs]
+        self._discovery_started = True
         count = 0
         for tool_dir in self._tool_dirs:
             if not tool_dir.exists():
@@ -769,7 +859,27 @@ class ToolRegistry:
                     except Exception as e:
                         logger.warning("加载工具 %s 失败: %s", entry.name, e)
         self._initialized = True
+        self._discovery_done.set()
         return count
+
+    def notify_ready(self) -> None:
+        """标记工具发现已完成（后台发现线程调用）。
+
+        用于在窗口先显示、重库导入后置完成时，唤醒
+        等待中的 run_tool / list_tools。
+        """
+        self._discovery_done.set()
+
+    def wait_ready(self, timeout: Optional[float] = None) -> bool:
+        """等待工具发现完成（阻塞，通常由后台线程很快完成）。
+
+        Args:
+            timeout: 最长等待秒数；None 表示无限等待。
+
+        Returns:
+            发现是否已完成。
+        """
+        return self._discovery_done.wait(timeout=timeout)
 
     # ------------------------------------------------------------------
     # 查询接口
@@ -801,6 +911,9 @@ class ToolRegistry:
         Returns:
             工具元信息列表。
         """
+        # 等待后台发现完成，避免前台拿到空列表（仅在已发起发现时阻塞）
+        if self._discovery_started:
+            self._discovery_done.wait(timeout=60.0)
         return [self.get_tool_meta(name) for name in self._tools]
 
     def get_schema(self, name: str) -> List[ParamDef]:
@@ -863,6 +976,10 @@ class ToolRegistry:
         Raises:
             KeyError: 工具未注册。
         """
+        # 等待后台发现完成，确保工具已注册（仅在已发起发现时阻塞，测试直接
+        # register 的场景不等待，避免无谓挂起）
+        if self._discovery_started:
+            self._discovery_done.wait(timeout=60.0)
         if name not in self._tools:
             raise KeyError(f"Tool '{name}' not found")
         task_id = str(uuid.uuid4())
@@ -901,6 +1018,7 @@ class ToolRegistry:
         Raises:
             KeyError: 任务不存在。
         """
+        self._ensure_history_loaded()
         sm = self._tasks.get(task_id)
         if sm is None:
             raise KeyError(f"Task '{task_id}' not found")
@@ -909,15 +1027,18 @@ class ToolRegistry:
     def list_tasks(self) -> List[TaskSummary]:
         """获取所有任务摘要列表。
 
+        首次调用时先从磁盘加载持久化历史。
+
         Returns:
             任务摘要列表。
         """
+        self._ensure_history_loaded()
         return [sm.to_summary() for sm in self._tasks.values()]
 
     def delete_task(self, task_id: str) -> bool:
         """删除任务记录。
 
-        从注册中心移除任务状态机及其关联回调。
+        从注册中心移除任务状态机及其关联回调，并同步更新磁盘历史。
 
         Args:
             task_id: 任务唯一标识。
@@ -927,9 +1048,113 @@ class ToolRegistry:
         """
         if task_id not in self._tasks:
             return False
+        sm = self._tasks[task_id]
         del self._tasks[task_id]
         self._callbacks.pop(task_id, None)
+        self._save_tasks()
+        self._cleanup_task_artifacts(sm)
         return True
+
+    def _cleanup_task_artifacts(self, sm: "TaskStateMachine") -> None:
+        """删除被删任务引用且不再被任何任务引用的磁盘产物。
+
+        委托给工具自带的 cleanup_task 钩子执行（引用计数），
+        异常仅记告警，不阻断任务删除。
+
+        Args:
+            sm: 被删除任务的状态机实例。
+        """
+        if sm.tool_name not in self._tools:
+            return
+        tool = self.get_tool(sm.tool_name)
+        if not hasattr(tool, "cleanup_task"):
+            return
+        referenced = self._collect_referenced_ids(sm.tool_name)
+        try:
+            tool.cleanup_task(sm._result, referenced)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("任务产物清理失败: %s", exc)
+
+    def _collect_referenced_ids(self, tool_name: str) -> Set[str]:
+        """汇总所有同工具任务（含历史）当前引用的产物键集合。
+
+        用于引用计数：仅删除不在该集合中的孤儿产物。
+
+        Args:
+            tool_name: 工具名。
+
+        Returns:
+            产物键（如 video_id 的 md5 散列）集合。
+        """
+        referenced: Set[str] = set()
+        if tool_name not in self._tools:
+            return referenced
+        tool = self.get_tool(tool_name)
+        extract = getattr(tool, "extract_refs", None)
+        if extract is None:
+            return referenced
+        for sm in self._tasks.values():
+            if sm.tool_name == tool_name:
+                referenced |= set(extract(sm._result) or set())
+        return referenced
+
+    def _collect_referenced_outputs(self, tool_name: str) -> Set[str]:
+        """汇总所有同工具任务当前引用的输出报告路径集合。
+
+        用于全局清理时避免误删仍被任务引用的报告。
+
+        Args:
+            tool_name: 工具名。
+
+        Returns:
+            输出报告绝对路径集合。
+        """
+        referenced: Set[str] = set()
+        if tool_name not in self._tools:
+            return referenced
+        tool = self.get_tool(tool_name)
+        extract = getattr(tool, "extract_outputs", None)
+        if extract is None:
+            return referenced
+        for sm in self._tasks.values():
+            if sm.tool_name == tool_name:
+                referenced |= set(extract(sm._result) or set())
+        return referenced
+
+    def cleanup_orphans(self) -> Dict[str, int]:
+        """清理所有不再被任何任务引用的中间产物（全局入口）。
+
+        遍历具备清理能力的工具，汇总其清理计数。
+
+        Returns:
+            {"keyframes": int, "features": int, "output": int} 计数。
+        """
+        self._ensure_history_loaded()
+        totals: Dict[str, int] = {
+            "keyframes": 0, "features": 0, "output": 0,
+        }
+        seen: Set[str] = set()
+        for sm in self._tasks.values():
+            if sm.tool_name not in self._tools:
+                continue
+            tool = self.get_tool(sm.tool_name)
+            if not hasattr(tool, "cleanup_orphans"):
+                continue
+            if tool.name in seen:
+                continue
+            seen.add(tool.name)
+            referenced = self._collect_referenced_ids(sm.tool_name)
+            referenced_outputs = self._collect_referenced_outputs(sm.tool_name)
+            try:
+                counts = tool.cleanup_orphans(
+                    referenced, referenced_outputs
+                ) or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("全局产物清理失败: %s", exc)
+                continue
+            for key, value in counts.items():
+                totals[key] = totals.get(key, 0) + value
+        return totals
 
     # ------------------------------------------------------------------
     # 回调注册与注销
@@ -966,6 +1191,68 @@ class ToolRegistry:
     def unregister_error_callback(self, task_id: str) -> None:
         """注销错误回调。"""
         self._callbacks.get(task_id, {}).pop("error", None)
+
+    # ------------------------------------------------------------------
+    # 任务历史持久化
+    # ------------------------------------------------------------------
+
+    def _ensure_history_loaded(self) -> None:
+        """首次访问任务历史时从磁盘加载（仅执行一次）。
+
+        启动后首次调用 list_tasks/get_task 时触发，将持久化的
+        终态任务恢复进内存，使历史跨重启保留。
+        """
+        if self._history_loaded:
+            return
+        self._history_loaded = True
+        self._load_tasks()
+
+    def _load_tasks(self) -> None:
+        """从磁盘 JSON 文件加载任务历史到内存。
+
+        单个记录损坏时跳过并记录告警，不影响其余任务加载。
+        """
+        if self._history_path is None or not os.path.exists(
+            self._history_path
+        ):
+            return
+        try:
+            with open(self._history_path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            for item in data:
+                try:
+                    sm = TaskStateMachine.from_dict(item)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("跳过损坏的任务历史记录: %s", exc)
+                    continue
+                self._tasks[sm.task_id] = sm
+            logger.info("已从磁盘加载 %d 条任务历史", len(data))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("任务历史加载失败: %s", exc)
+
+    def _save_tasks(self) -> None:
+        """将终态任务历史原子写入磁盘 JSON 文件。
+
+        仅持久化终态任务（completed/failed/cancelled/invalid），
+        写临时文件后 os.replace 原子替换，避免进程被杀损坏文件。
+        """
+        if self._history_path is None:
+            return
+        try:
+            os.makedirs(
+                os.path.dirname(self._history_path), exist_ok=True
+            )
+            data = [
+                sm.to_dict()
+                for sm in self._tasks.values()
+                if sm.status in _TERMINAL_STATUSES
+            ]
+            tmp = self._history_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, self._history_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("任务历史持久化失败: %s", exc)
 
     # ------------------------------------------------------------------
     # 资源池管理（hestia）
@@ -1170,6 +1457,9 @@ class ToolRegistry:
                 sm.transition(TaskStatus.FAILED)
                 sm._error = str(e)
                 self._fire_callback(task_id, "error", str(e))
+        finally:
+            # 无论正常/失败/取消/校验失败，任务退出时均为终态，统一落盘
+            self._save_tasks()
 
 
 # 全局单例 + 装饰器

@@ -5,16 +5,19 @@
 """
 
 import asyncio
+import json
 import os
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from fabrica.tool import ToolRegistry, TaskStatus
+from fabrica.tool import ToolRegistry, TaskStatus, TaskStateMachine
 
 from tests.unittests.tool.fixtures import (
     CancellableTool,
+    CleanupTool,
+    CpuTool,
     DummyTool,
     FailingTool,
     MissingNameTool,
@@ -62,6 +65,12 @@ class TestToolRegistrySync(unittest.TestCase):
         count = self.registry.discover(["/nonexistent/path"])
         self.assertEqual(count, 0)
         self.assertTrue(self.registry._initialized)
+
+    def test_discover_marks_ready(self):
+        """discover 后应标记已发起发现并置位完成事件。"""
+        self.registry.discover(["/nonexistent/path"])
+        self.assertTrue(self.registry._discovery_started)
+        self.assertTrue(self.registry._discovery_done.is_set())
 
     def test_discover_counts_importable_packages(self):
         """扫描目录应统计可导入的子包数量。"""
@@ -260,6 +269,161 @@ class TestToolRegistryAsync(unittest.IsolatedAsyncioTestCase):
         summaries = self.registry.list_tasks()
         self.assertEqual(len(summaries), 1)
         self.assertEqual(summaries[0].task_id, task_id)
+
+
+class TestTaskStateMachinePersistence(unittest.TestCase):
+    """TaskStateMachine 序列化/反序列化往返测试。"""
+
+    def test_to_dict_from_dict_roundtrip(self):
+        """to_dict/from_dict 往返应完整保留状态、结果与日志。"""
+        sm = TaskStateMachine("t1", "dummy", {"a": 1})
+        sm.transition(TaskStatus.VALIDATING)
+        sm.transition(TaskStatus.VALID)
+        sm.transition(TaskStatus.RUNNING)
+        sm.transition(TaskStatus.COMPLETED)
+        sm._result = {"ok": True}
+        sm.append_log("info", "hello")
+        created_at = sm._created_at
+        completed_at = sm._completed_at
+
+        d = sm.to_dict()
+        sm2 = TaskStateMachine.from_dict(d)
+        self.assertEqual(sm2.task_id, "t1")
+        self.assertEqual(sm2.tool_name, "dummy")
+        self.assertEqual(sm2.params, {"a": 1})
+        self.assertEqual(sm2.status, TaskStatus.COMPLETED)
+        self.assertEqual(sm2._result, {"ok": True})
+        self.assertEqual(sm2._logs[0]["message"], "hello")
+        self.assertEqual(sm2._created_at, created_at)
+        self.assertEqual(sm2._completed_at, completed_at)
+
+        # 经 JSON 序列化往返后仍可重建
+        d2 = json.loads(json.dumps(d))
+        sm3 = TaskStateMachine.from_dict(d2)
+        self.assertEqual(sm3._result, {"ok": True})
+        self.assertEqual(sm3.status, TaskStatus.COMPLETED)
+
+
+class TestTaskHistoryPersistence(unittest.IsolatedAsyncioTestCase):
+    """任务历史磁盘持久化测试。"""
+
+    async def _wait_for_terminal(self, registry, task_id, timeout=10.0):
+        """轮询等待任务进入终态。"""
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            detail = registry.get_task(task_id)
+            if detail.status in (
+                "completed", "failed", "cancelled", "invalid",
+            ):
+                return detail
+            await asyncio.sleep(0.02)
+        raise AssertionError(f"任务 {task_id} 未在 {timeout}s 内结束")
+
+    async def test_terminal_saved_and_reloaded(self):
+        """终态任务落盘后，重启重建单例可从磁盘加载并返回结果。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            reg = fresh_registry()
+            reg._history_path = path
+            reg.register(DummyTool)
+            task_id = reg.run_tool("dummy", {})
+            detail = await self._wait_for_terminal(reg, task_id)
+            self.assertEqual(detail.status, "completed")
+
+            # 模拟重启：重建单例，指向同一历史文件
+            reg2 = fresh_registry()
+            reg2._history_path = path
+            summaries = reg2.list_tasks()
+            self.assertEqual(len(summaries), 1)
+            self.assertEqual(summaries[0].task_id, task_id)
+            d2 = reg2.get_task(task_id)
+            self.assertEqual(d2.status, "completed")
+            self.assertEqual(d2.result, {"ok": True})
+
+    async def test_non_terminal_not_saved(self):
+        """运行中的任务不落盘，终态后才写入。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            reg = fresh_registry()
+            reg._history_path = path
+            reg.register(CpuTool)
+            task_id = reg.run_tool("cpu_tool", {"seconds": 1.0})
+            await asyncio.sleep(0.1)  # 确保仍在运行
+            reg._save_tasks()
+            self.assertTrue(os.path.exists(path))
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data, [])
+
+            # 等待任务结束并落盘后，记录被保存
+            detail = await self._wait_for_terminal(reg, task_id)
+            self.assertEqual(detail.status, "completed")
+            reg._save_tasks()
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["task_id"], task_id)
+
+    async def test_delete_removes_from_disk(self):
+        """删除任务后重新落盘，磁盘历史不再包含该任务。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tasks.json")
+            reg = fresh_registry()
+            reg._history_path = path
+            reg.register(DummyTool)
+            task_id = reg.run_tool("dummy", {})
+            await self._wait_for_terminal(reg, task_id)
+            self.assertTrue(os.path.exists(path))
+            self.assertTrue(reg.delete_task(task_id))
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.assertEqual(data, [])
+
+
+class TestTaskCleanupHook(unittest.IsolatedAsyncioTestCase):
+    """TaskRegistry 中间产物清理编排测试。"""
+
+    async def _wait_for_terminal(self, registry, task_id, timeout=10.0):
+        """轮询等待任务进入终态。"""
+        start = time.monotonic()
+        while time.monotonic() - start < timeout:
+            detail = registry.get_task(task_id)
+            if detail.status in (
+                "completed", "failed", "cancelled", "invalid",
+            ):
+                return detail
+            await asyncio.sleep(0.02)
+        raise AssertionError(f"任务 {task_id} 未在 {timeout}s 内结束")
+
+    async def test_delete_task_calls_cleanup_with_referenced(self):
+        """删除任务应调用工具 cleanup_task，并传入其余任务引用的键。"""
+        reg = fresh_registry()
+        reg.register(CleanupTool)
+        tool = reg.get_tool("cleanup_tool")
+        t1 = reg.run_tool("cleanup_tool", {})
+        t2 = reg.run_tool("cleanup_tool", {})
+        await self._wait_for_terminal(reg, t1)
+        await self._wait_for_terminal(reg, t2)
+
+        self.assertTrue(reg.delete_task(t1))
+        self.assertEqual(len(tool.cleanup_calls), 1)
+        result, referenced = tool.cleanup_calls[0]
+        self.assertEqual(referenced, {"h1"})
+        self.assertEqual(result["status"], "completed")
+
+    async def test_cleanup_orphans_calls_tool_and_aggregates(self):
+        """cleanup_orphans 应调用工具钩子并汇总计数。"""
+        reg = fresh_registry()
+        reg.register(CleanupTool)
+        tool = reg.get_tool("cleanup_tool")
+        t1 = reg.run_tool("cleanup_tool", {})
+        await self._wait_for_terminal(reg, t1)
+
+        counts = reg.cleanup_orphans()
+        self.assertEqual(len(tool.orphan_calls), 1)
+        self.assertEqual(counts["keyframes"], 1)
+        self.assertEqual(counts["features"], 2)
+        self.assertEqual(counts["output"], 0)
 
 
 if __name__ == "__main__":
